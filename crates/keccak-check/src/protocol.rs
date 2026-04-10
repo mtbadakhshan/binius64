@@ -1,21 +1,22 @@
 // Copyright 2026 The Binius Developers
 
-use binius_field::{Field, PackedField};
+use binius_field::{BinaryField, PackedField};
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 
 use crate::{
-	ChiIotaReduction, EndpointClaims, Error, FullTrace, LinearRoundReduction, chi_iota,
-	linear_round, mixed_claim_from_evals, mixed_lane_claim,
+	BitIndexedEndpointClaims, ChiIotaReduction, Error, FullTrace, LinearRoundReduction,
+	bit_indexed_claim_from_evals, bit_indexed_lane_claim, chi_iota, linear_round,
 };
 
 /// Prove the full standalone 24-round KeccakCheck over an explicit public trace.
 pub fn prove<P, Channel>(
 	trace: &FullTrace<P>,
 	channel: &mut Channel,
-) -> Result<EndpointClaims<P::Scalar>, Error>
+) -> Result<BitIndexedEndpointClaims<P::Scalar>, Error>
 where
 	P: PackedField,
+	P::Scalar: BinaryField,
 	Channel: IPProverChannel<P::Scalar>,
 {
 	validate_trace(trace)?;
@@ -33,9 +34,19 @@ where
 		.rounds
 		.last()
 		.ok_or(Error::InvalidClaim("trace must contain 24 rounds"))?;
-	let output_point = channel.sample_many(output_round.output[0].log_len());
+	let output_bit_challenge = channel.sample();
+	let output_high_point = channel.sample_many(
+		output_round.output[0]
+			.log_len()
+			.saturating_sub(crate::LOG_BIT_INDEX_VARS),
+	);
 	let output_weights = channel.sample_array::<25>();
-	let output_claim = mixed_lane_claim(&output_round.output, &output_point, output_weights);
+	let output_claim = bit_indexed_lane_claim(
+		&output_round.output,
+		output_bit_challenge,
+		&output_high_point,
+		output_weights,
+	);
 	let mut carried_output_claim = output_claim.clone();
 
 	for round in (0..trace.rounds.len()).rev() {
@@ -47,6 +58,7 @@ where
 		)
 		.entered();
 		let chi_iota_output = chi_iota::prove_round::<P, _>(
+			&trace.rounds[round].output,
 			&trace.rounds[round].pre_chi,
 			&ChiIotaReduction {
 				output_claim: carried_output_claim,
@@ -56,8 +68,9 @@ where
 		)?;
 
 		let pre_chi_weights = channel.sample_array::<25>();
-		let pre_chi_claim = mixed_claim_from_evals(
-			chi_iota_output.reduced_point,
+		let pre_chi_claim = bit_indexed_claim_from_evals(
+			output_bit_challenge,
+			chi_iota_output.reduced_high_point,
 			pre_chi_weights,
 			chi_iota_output.pre_chi_evals,
 		);
@@ -69,20 +82,22 @@ where
 
 		if round > 0 {
 			let next_output_weights = channel.sample_array::<25>();
-			carried_output_claim = mixed_claim_from_evals(
-				linear_output.reduced_point,
+			carried_output_claim = bit_indexed_claim_from_evals(
+				output_bit_challenge,
+				linear_output.reduced_high_point,
 				next_output_weights,
 				linear_output.input_evals,
 			);
 		} else {
 			let input_weights = channel.sample_array::<25>();
-			let input_claim = mixed_claim_from_evals(
-				linear_output.reduced_point,
+			let input_claim = bit_indexed_claim_from_evals(
+				output_bit_challenge,
+				linear_output.reduced_high_point,
 				input_weights,
 				linear_output.input_evals,
 			);
 
-			return Ok(EndpointClaims {
+			return Ok(BitIndexedEndpointClaims {
 				output_claim,
 				input_claim,
 			});
@@ -96,9 +111,9 @@ where
 pub fn verify<F, P, Channel>(
 	trace: &FullTrace<P>,
 	channel: &mut Channel,
-) -> Result<EndpointClaims<F>, Error>
+) -> Result<BitIndexedEndpointClaims<F>, Error>
 where
-	F: Field,
+	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPVerifierChannel<F, Elem = F>,
 {
@@ -117,9 +132,19 @@ where
 		.rounds
 		.last()
 		.ok_or(Error::InvalidClaim("trace must contain 24 rounds"))?;
-	let output_point = channel.sample_many(output_round.output[0].log_len());
+	let output_bit_challenge = channel.sample();
+	let output_high_point = channel.sample_many(
+		output_round.output[0]
+			.log_len()
+			.saturating_sub(crate::LOG_BIT_INDEX_VARS),
+	);
 	let output_weights = channel.sample_array::<25>();
-	let output_claim = mixed_lane_claim(&output_round.output, &output_point, output_weights);
+	let output_claim = bit_indexed_lane_claim(
+		&output_round.output,
+		output_bit_challenge,
+		&output_high_point,
+		output_weights,
+	);
 	let mut carried_output_claim = output_claim.clone();
 
 	for round in (0..trace.rounds.len()).rev() {
@@ -130,7 +155,9 @@ where
 			round
 		)
 		.entered();
-		let chi_iota_output = chi_iota::verify_round(
+		let chi_iota_output = chi_iota::verify_round::<F, P, _>(
+			&trace.rounds[round].output,
+			&trace.rounds[round].pre_chi,
 			&ChiIotaReduction {
 				output_claim: carried_output_claim,
 				round,
@@ -139,8 +166,9 @@ where
 		)?;
 
 		let pre_chi_weights = channel.sample_array::<25>();
-		let pre_chi_claim = mixed_claim_from_evals(
-			chi_iota_output.reduced_point,
+		let pre_chi_claim = bit_indexed_claim_from_evals(
+			output_bit_challenge,
+			chi_iota_output.reduced_high_point,
 			pre_chi_weights,
 			chi_iota_output.pre_chi_evals,
 		);
@@ -152,20 +180,22 @@ where
 
 		if round > 0 {
 			let next_output_weights = channel.sample_array::<25>();
-			carried_output_claim = mixed_claim_from_evals(
-				linear_output.reduced_point,
+			carried_output_claim = bit_indexed_claim_from_evals(
+				output_bit_challenge,
+				linear_output.reduced_high_point,
 				next_output_weights,
 				linear_output.input_evals,
 			);
 		} else {
 			let input_weights = channel.sample_array::<25>();
-			let input_claim = mixed_claim_from_evals(
-				linear_output.reduced_point,
+			let input_claim = bit_indexed_claim_from_evals(
+				output_bit_challenge,
+				linear_output.reduced_high_point,
 				input_weights,
 				linear_output.input_evals,
 			);
 
-			return Ok(EndpointClaims {
+			return Ok(BitIndexedEndpointClaims {
 				output_claim,
 				input_claim,
 			});

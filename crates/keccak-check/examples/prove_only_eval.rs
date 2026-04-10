@@ -3,9 +3,13 @@
 use std::{env, time::Instant};
 
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
-use binius_keccak_check::{FullTrace, prove as prove_protocol, trace_from_inputs, verify as verify_protocol};
+use binius_keccak_check::{
+	FullTrace, prove as prove_protocol, trace_from_inputs, verify as verify_protocol,
+};
 use binius_transcript::ProverTranscript;
-use binius_verifier::{config::StdChallenger, transcript::VerifierTranscript as ProtocolVerifierTranscript};
+use binius_verifier::{
+	config::StdChallenger, transcript::VerifierTranscript as ProtocolVerifierTranscript,
+};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 type Packed = OptimalPackedB128;

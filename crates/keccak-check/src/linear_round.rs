@@ -2,7 +2,7 @@
 
 use std::{array, collections::BTreeMap, sync::OnceLock};
 
-use binius_field::{Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck::RoundCoeffs};
 use binius_ip_prover::{
 	channel::IPProverChannel,
@@ -19,8 +19,8 @@ use binius_math::{
 };
 
 use crate::{
-	Error, MixedClaim,
-	rotation::rot_k_eq_vector,
+	BIT_INDEX_SIZE, BitIndexedMixedClaim, Error, LOG_BIT_INDEX_VARS,
+	rotation::{bit_lagrange_weights, rotate_bit_lagrange_weights},
 	trace::{LaneTables, R, idx},
 };
 
@@ -44,18 +44,18 @@ pub type LinearRecipe<F> = [Vec<LinearRecipeTerm<F>>; 25];
 /// Input to the standalone linear-round reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearRoundReduction<F> {
-	/// Mixed claim on the explicit `pre_chi` lanes.
-	pub pre_chi_claim: MixedClaim<F>,
+	/// Bit-indexed mixed claim on the explicit `pre_chi` lanes.
+	pub pre_chi_claim: BitIndexedMixedClaim<F>,
 }
 
 /// Output of the standalone linear-round reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearRoundOutput<F> {
-	/// Reduced point for the carried input-lane evaluations.
-	pub reduced_point: Vec<F>,
-	/// Evaluations of the 25 input lanes at `reduced_point`.
+	/// Reduced point for the remaining high instance variables.
+	pub reduced_high_point: Vec<F>,
+	/// Evaluations of the 25 folded input lanes at `reduced_high_point`.
 	pub input_evals: [F; 25],
-	/// Evaluation of the mixed linear round polynomial at `reduced_point`.
+	/// Evaluation of the mixed linear round polynomial at `reduced_high_point`.
 	pub reduced_eval: F,
 }
 
@@ -166,10 +166,14 @@ pub fn build_linear_recipe<F: Field>() -> (Vec<RotView>, LinearRecipe<F>) {
 /// - lane tables must have at least 6 variables
 pub fn materialize_mixed_linear_table<P: PackedField>(
 	input: &LaneTables<P>,
+	bit_weights: &[P::Scalar; BIT_INDEX_SIZE],
 	lane_weights: [P::Scalar; 25],
 ) -> FieldBuffer<P> {
 	let log_len = input[0].log_len();
-	assert!(log_len >= 6, "precondition: lane tables must have at least 6 variables");
+	assert!(
+		log_len >= LOG_BIT_INDEX_VARS,
+		"precondition: lane tables must have at least 6 variables"
+	);
 	assert!(
 		input
 			.iter()
@@ -180,12 +184,12 @@ pub fn materialize_mixed_linear_table<P: PackedField>(
 		"[phase] Materialize Mixed Linear Table",
 		phase = "keccak_linear_materialize",
 		perfetto_category = "phase",
-		n_vars = log_len
+		n_vars = log_len - LOG_BIT_INDEX_VARS
 	)
 	.entered();
 
 	let view_weights = view_weights_from_lane_weights(&lane_weights);
-	materialize_weighted_rot_view_sum(input, &view_weights)
+	materialize_weighted_rot_view_sum(input, &view_weights, bit_weights)
 }
 
 /// Prove one `theta+rho+pi` linear reduction step.
@@ -196,6 +200,7 @@ pub fn prove_round<P, Channel>(
 ) -> Result<LinearRoundOutput<P::Scalar>, Error>
 where
 	P: PackedField,
+	P::Scalar: BinaryField,
 	Channel: IPProverChannel<P::Scalar>,
 {
 	validate_reduction(input, reduction)?;
@@ -203,15 +208,16 @@ where
 		"[phase] Keccak Linear Prove",
 		phase = "keccak_linear_prove",
 		perfetto_category = "phase",
-		n_vars = reduction.pre_chi_claim.point.len()
+		n_vars = reduction.pre_chi_claim.high_point.len()
 	)
 	.entered();
 
+	let bit_weights = bit_lagrange_weights(reduction.pre_chi_claim.bit_challenge);
 	let mixed_linear_table =
-		materialize_mixed_linear_table(input, reduction.pre_chi_claim.lane_weights);
+		materialize_mixed_linear_table(input, &bit_weights, reduction.pre_chi_claim.lane_weights);
 	let prover = LinearMleCheckProver::new(
 		mixed_linear_table,
-		reduction.pre_chi_claim.point.clone(),
+		reduction.pre_chi_claim.high_point.clone(),
 		reduction.pre_chi_claim.mixed_eval,
 	)?;
 	let proof_output = prove_single_mlecheck(prover, channel)?;
@@ -220,12 +226,12 @@ where
 		.first()
 		.copied()
 		.ok_or(Error::InvalidClaim("expected one mixed linear evaluation"))?;
-	let mut reduced_point = proof_output.challenges;
-	reduced_point.reverse();
-	let input_evals = evaluate_input_lanes_at_point(input, &reduced_point);
+	let mut reduced_high_point = proof_output.challenges;
+	reduced_high_point.reverse();
+	let input_evals = evaluate_input_lanes_at_point(input, &reduced_high_point, &bit_weights);
 
 	Ok(LinearRoundOutput {
-		reduced_point,
+		reduced_high_point,
 		input_evals,
 		reduced_eval,
 	})
@@ -238,7 +244,7 @@ pub fn verify_round<F, P, Channel>(
 	channel: &mut Channel,
 ) -> Result<LinearRoundOutput<F>, Error>
 where
-	F: Field,
+	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPVerifierChannel<F, Elem = F>,
 {
@@ -247,27 +253,29 @@ where
 		"[phase] Keccak Linear Verify",
 		phase = "keccak_linear_verify",
 		perfetto_category = "phase",
-		n_vars = reduction.pre_chi_claim.point.len()
+		n_vars = reduction.pre_chi_claim.high_point.len()
 	)
 	.entered();
 
 	let mlecheck_output = mlecheck::verify(
-		&reduction.pre_chi_claim.point,
+		&reduction.pre_chi_claim.high_point,
 		1,
 		reduction.pre_chi_claim.mixed_eval,
 		channel,
 	)?;
-	let mut reduced_point = mlecheck_output.challenges;
-	reduced_point.reverse();
+	let mut reduced_high_point = mlecheck_output.challenges;
+	reduced_high_point.reverse();
+	let bit_weights = bit_lagrange_weights(reduction.pre_chi_claim.bit_challenge);
 	let (input_evals, reduced_eval) = evaluate_input_lanes_and_linear_at_point(
 		input,
 		&reduction.pre_chi_claim.lane_weights,
-		&reduced_point,
+		&reduced_high_point,
+		&bit_weights,
 	);
 	channel.assert_zero(reduced_eval - mlecheck_output.eval)?;
 
 	Ok(LinearRoundOutput {
-		reduced_point,
+		reduced_high_point,
 		input_evals,
 		reduced_eval,
 	})
@@ -318,6 +326,7 @@ fn view_weights_from_lane_weights<F: Field>(lane_weights: &[F; 25]) -> Vec<F> {
 fn materialize_weighted_rot_view_sum<P: PackedField>(
 	input: &LaneTables<P>,
 	view_weights: &[P::Scalar],
+	bit_weights: &[P::Scalar; BIT_INDEX_SIZE],
 ) -> FieldBuffer<P> {
 	let static_recipe = linear_recipe_static();
 	assert_eq!(
@@ -327,30 +336,38 @@ fn materialize_weighted_rot_view_sum<P: PackedField>(
 	);
 
 	let log_len = input[0].log_len();
-	let mut mixed_values = vec![P::Scalar::ZERO; 1 << log_len];
+	let log_h = log_len - LOG_BIT_INDEX_VARS;
+	let rotated_bit_weights = static_recipe
+		.unique_rotations
+		.iter()
+		.map(|&rot| rotate_bit_lagrange_weights(bit_weights, rot))
+		.collect::<Vec<_>>();
+	let mut mixed_values = vec![P::Scalar::ZERO; 1 << log_h];
 	for lane in 0..25 {
 		let active_rotations = static_recipe.lane_views[lane]
 			.iter()
 			.filter_map(|&(rot, rot_view_index)| {
 				let coeff = view_weights[rot_view_index];
-				(coeff != P::Scalar::ZERO).then_some((rot as usize, coeff))
+				(coeff != P::Scalar::ZERO).then_some((rot, coeff))
 			})
 			.collect::<Vec<_>>();
 		if active_rotations.is_empty() {
 			continue;
 		}
 
-		for instance_index in 0..1 << (log_len - 6) {
+		for (instance_index, mixed_value) in mixed_values.iter_mut().enumerate() {
 			let input_block = input[lane].chunk(6, instance_index);
-			let output_block = &mut mixed_values[instance_index * 64..(instance_index + 1) * 64];
-			for bit in 0..64 {
-				let lane_contribution = active_rotations
-					.iter()
-					.fold(P::Scalar::ZERO, |acc, (rot, coeff)| {
-						acc + *coeff * input_block.get((bit + 64 - *rot) % 64)
-					});
-				output_block[bit] += lane_contribution;
-			}
+			*mixed_value += active_rotations
+				.iter()
+				.fold(P::Scalar::ZERO, |acc, (rot, coeff)| {
+					let rotation_index = static_recipe.rotation_index[rot];
+					let rotated_weights = &rotated_bit_weights[rotation_index];
+					acc + *coeff
+						* std::iter::zip(input_block.iter_scalars(), rotated_weights)
+							.fold(P::Scalar::ZERO, |block_acc, (value, weight)| {
+								block_acc + value * *weight
+							})
+				});
 		}
 	}
 
@@ -359,40 +376,34 @@ fn materialize_weighted_rot_view_sum<P: PackedField>(
 
 fn evaluate_input_lanes_at_point<F: Field, P: PackedField<Scalar = F>>(
 	input: &LaneTables<P>,
-	point: &[F],
+	high_point: &[F],
+	bit_weights: &[F; BIT_INDEX_SIZE],
 ) -> [F; 25] {
-	let low_point: [F; 6] = point[..6]
-		.try_into()
-		.expect("precondition: point length must be at least 6");
-	let low_eq = eq_ind_partial_eval_scalars(&low_point);
-	let lane_low_vectors = evaluate_lane_low_vectors(input, &point[6..]);
+	let lane_low_vectors = evaluate_lane_low_vectors(input, high_point);
 
-	array::from_fn(|lane| dot_64(&lane_low_vectors[lane], &low_eq))
+	array::from_fn(|lane| dot_64(&lane_low_vectors[lane], bit_weights))
 }
 
 fn evaluate_input_lanes_and_linear_at_point<F: Field, P: PackedField<Scalar = F>>(
 	input: &LaneTables<P>,
 	lane_weights: &[F; 25],
-	point: &[F],
+	high_point: &[F],
+	bit_weights: &[F; BIT_INDEX_SIZE],
 ) -> ([F; 25], F) {
 	let _eval_guard = tracing::info_span!(
 		"[phase] Evaluate Linear Round Point",
 		phase = "keccak_linear_point_eval",
 		perfetto_category = "phase",
-		n_vars = point.len()
+		n_vars = high_point.len()
 	)
 	.entered();
 	let static_recipe = linear_recipe_static();
-	let low_point: [F; 6] = point[..6]
-		.try_into()
-		.expect("precondition: point length must be at least 6");
-	let low_eq = eq_ind_partial_eval_scalars(&low_point);
-	let lane_low_vectors = evaluate_lane_low_vectors(input, &point[6..]);
-	let input_evals = array::from_fn(|lane| dot_64(&lane_low_vectors[lane], &low_eq));
-	let rot_eqs = static_recipe
+	let lane_low_vectors = evaluate_lane_low_vectors(input, high_point);
+	let input_evals = array::from_fn(|lane| dot_64(&lane_low_vectors[lane], bit_weights));
+	let rotated_weights = static_recipe
 		.unique_rotations
 		.iter()
-		.map(|&rot| rot_k_eq_vector(&low_point, rot))
+		.map(|&rot| rotate_bit_lagrange_weights(bit_weights, rot))
 		.collect::<Vec<_>>();
 	let view_weights = view_weights_from_lane_weights(lane_weights);
 
@@ -405,7 +416,7 @@ fn evaluate_input_lanes_and_linear_at_point<F: Field, P: PackedField<Scalar = F>
 			}
 
 			let rotation_index = static_recipe.rotation_index[&rot_view.rot];
-			acc + coeff * dot_64(&lane_low_vectors[rot_view.lane], &rot_eqs[rotation_index])
+			acc + coeff * dot_64(&lane_low_vectors[rot_view.lane], &rotated_weights[rotation_index])
 		},
 	);
 
@@ -448,7 +459,7 @@ fn validate_reduction<F: Field, P: PackedField<Scalar = F>>(
 	reduction: &LinearRoundReduction<F>,
 ) -> Result<(), Error> {
 	let log_len = input[0].log_len();
-	if log_len < 6 {
+	if log_len < LOG_BIT_INDEX_VARS {
 		return Err(Error::InvalidClaim("lane tables must have at least 6 variables"));
 	}
 
@@ -459,8 +470,8 @@ fn validate_reduction<F: Field, P: PackedField<Scalar = F>>(
 		return Err(Error::InvalidClaim("all input lane tables must have the same dimension"));
 	}
 
-	if reduction.pre_chi_claim.point.len() != log_len {
-		return Err(Error::InvalidClaim("point length must match the input lane dimensions"));
+	if reduction.pre_chi_claim.high_point.len() + LOG_BIT_INDEX_VARS != log_len {
+		return Err(Error::InvalidClaim("high-point length must match the input lane dimensions"));
 	}
 
 	Ok(())
@@ -574,14 +585,13 @@ mod tests {
 		arch::{OptimalB128, OptimalPackedB128},
 	};
 	use binius_math::{
-		multilinear::evaluate::evaluate,
-		test_utils::{index_to_hypercube_point, random_scalars},
+		BinarySubspace, multilinear::evaluate::evaluate, test_utils::random_scalars,
 	};
 	use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::{mixed_lane_claim, trace::trace_from_inputs};
+	use crate::{bit_indexed_lane_claim, trace::trace_from_inputs};
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
@@ -604,13 +614,19 @@ mod tests {
 		for lane in 0..25 {
 			let lane_weights =
 				array::from_fn(|weight_lane| if weight_lane == lane { F::ONE } else { F::ZERO });
-			let reconstructed = materialize_mixed_linear_table(&round_trace.input, lane_weights);
-
 			for bit in 0..64 {
-				let point = index_to_hypercube_point::<F>(6, bit);
+				let bit_challenge = BinarySubspace::<F>::with_dim(LOG_BIT_INDEX_VARS)
+					.iter()
+					.nth(bit)
+					.expect("bit domain must contain 64 elements");
+				let bit_weights = bit_lagrange_weights(bit_challenge);
+				let reconstructed =
+					materialize_mixed_linear_table(&round_trace.input, &bit_weights, lane_weights);
+				let expected =
+					bit_indexed_lane_claim(&round_trace.pre_chi, bit_challenge, &[], lane_weights);
 				assert_eq!(
-					evaluate(&reconstructed, &point),
-					evaluate(&round_trace.pre_chi[lane], &point),
+					reconstructed.get(0),
+					expected.mixed_eval,
 					"mismatch on lane={lane}, bit={bit}"
 				);
 			}
@@ -620,12 +636,17 @@ mod tests {
 	#[test]
 	fn test_linear_round_prove_verify() {
 		let mut rng = StdRng::seed_from_u64(8);
-		let input_state = array::from_fn(|_| rng.random::<u64>());
-		let trace = trace_from_inputs::<P>(&[input_state]);
+		let inputs = vec![
+			array::from_fn(|_| rng.random::<u64>()),
+			array::from_fn(|_| rng.random::<u64>()),
+		];
+		let trace = trace_from_inputs::<P>(&inputs);
 		let round_trace = &trace.rounds[0];
-		let point = random_scalars::<F>(&mut rng, 6);
+		let bit_challenge = F::random(&mut rng);
+		let high_point = random_scalars::<F>(&mut rng, 1);
 		let lane_weights = array::from_fn(|_| F::random(&mut rng));
-		let pre_chi_claim = mixed_lane_claim(&round_trace.pre_chi, &point, lane_weights);
+		let pre_chi_claim =
+			bit_indexed_lane_claim(&round_trace.pre_chi, bit_challenge, &high_point, lane_weights);
 		let reduction = LinearRoundReduction { pre_chi_claim };
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -641,14 +662,16 @@ mod tests {
 		verifier_transcript.finalize().unwrap();
 
 		assert_eq!(prover_output, verifier_output);
+		let bit_weights = bit_lagrange_weights(bit_challenge);
 		assert_eq!(
 			prover_output.reduced_eval,
 			evaluate(
 				&materialize_mixed_linear_table(
 					&round_trace.input,
+					&bit_weights,
 					reduction.pre_chi_claim.lane_weights,
 				),
-				&prover_output.reduced_point
+				&prover_output.reduced_high_point
 			)
 		);
 	}
@@ -656,18 +679,27 @@ mod tests {
 	#[test]
 	fn test_linear_round_rejects_corrupted_input() {
 		let mut rng = StdRng::seed_from_u64(9);
-		let input_state = array::from_fn(|_| rng.random::<u64>());
-		let trace = trace_from_inputs::<P>(&[input_state]);
+		let inputs = vec![
+			array::from_fn(|_| rng.random::<u64>()),
+			array::from_fn(|_| rng.random::<u64>()),
+			array::from_fn(|_| rng.random::<u64>()),
+			array::from_fn(|_| rng.random::<u64>()),
+		];
+		let trace = trace_from_inputs::<P>(&inputs);
 		let round_trace = &trace.rounds[0];
-		let point = random_scalars::<F>(&mut rng, 6);
+		let bit_challenge = F::random(&mut rng);
+		let high_point = random_scalars::<F>(&mut rng, 2);
 		let lane_weights = array::from_fn(|_| F::random(&mut rng));
-		let pre_chi_claim = mixed_lane_claim(&round_trace.pre_chi, &point, lane_weights);
+		let pre_chi_claim =
+			bit_indexed_lane_claim(&round_trace.pre_chi, bit_challenge, &high_point, lane_weights);
 		let reduction = LinearRoundReduction { pre_chi_claim };
 
 		let mut corrupted_input = round_trace.input.clone();
-		let current = corrupted_input[0].get(0);
-		let flipped = if current == F::ZERO { F::ONE } else { F::ZERO };
-		corrupted_input[0].set(0, flipped);
+		for scalar_index in [0usize, 64, 128] {
+			let current = corrupted_input[0].get(scalar_index);
+			let flipped = if current == F::ZERO { F::ONE } else { F::ZERO };
+			corrupted_input[0].set(scalar_index, flipped);
+		}
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prove_round::<P, _>(&corrupted_input, &reduction, &mut prover_transcript).unwrap();
