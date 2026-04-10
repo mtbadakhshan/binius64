@@ -3,12 +3,14 @@
 use std::array;
 
 use binius_field::{BinaryField, Field, PackedField};
+use rayon::prelude::*;
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck::RoundCoeffs};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
 		Error as SumcheckError,
 		common::{MleCheckProver, SumcheckProver},
+		gruen32::Gruen32,
 		prove_single_mlecheck,
 	},
 };
@@ -69,13 +71,13 @@ where
 	.entered();
 
 	let bit_weights = bit_lagrange_weights(reduction.output_claim.bit_challenge);
-	let prover = ChiBitIndexedProver::new(
-		lane_block_tables(output),
+	let prover: ChiBitIndexedProver<P> = ChiBitIndexedProver::new(
 		lane_block_tables(pre_chi),
 		bit_weights,
 		reduction.output_claim.lane_weights,
 		reduction.round,
 		reduction.output_claim.high_point.clone(),
+		reduction.output_claim.mixed_eval,
 	)?;
 	let proof_output = prove_single_mlecheck(prover, channel)?;
 	let pre_chi_evals: [P::Scalar; 25] = proof_output
@@ -121,27 +123,6 @@ where
 	verify_round_assuming_valid_output_claim(output, pre_chi, reduction, channel)
 }
 
-/// Verify one `chi+iota` round assuming the enclosing protocol has already established that
-/// `reduction.output_claim` matches `output`.
-///
-/// This is only sound when the caller derives `reduction.output_claim` itself from prior verified
-/// reductions and separately checks explicit round chaining.
-pub(crate) fn verify_round_with_protocol_validated_output_claim<F, P, Channel>(
-	output: &LaneTables<P>,
-	pre_chi: &LaneTables<P>,
-	reduction: &ChiIotaReduction<F>,
-	channel: &mut Channel,
-) -> Result<ChiIotaRoundOutput<F>, Error>
-where
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-	Channel: IPVerifierChannel<F, Elem = F>,
-{
-	assert!(reduction.round < 24, "precondition: round must be < 24");
-	validate_reduction(output, pre_chi, reduction)?;
-	verify_round_assuming_valid_output_claim(output, pre_chi, reduction, channel)
-}
-
 fn validate_output_claim_against_tables<F: BinaryField, P: PackedField<Scalar = F>>(
 	output: &LaneTables<P>,
 	reduction: &ChiIotaReduction<F>,
@@ -179,8 +160,12 @@ where
 	)
 	.entered();
 
-	let mlecheck_output =
-		mlecheck::verify(&reduction.output_claim.high_point, 2, F::ZERO, channel)?;
+	let mlecheck_output = mlecheck::verify(
+		&reduction.output_claim.high_point,
+		2,
+		reduction.output_claim.mixed_eval,
+		channel,
+	)?;
 	let mut reduced_high_point = mlecheck_output.challenges;
 	reduced_high_point.reverse();
 	let bit_weights = bit_lagrange_weights(reduction.output_claim.bit_challenge);
@@ -192,13 +177,13 @@ where
 		&reduction.output_claim.lane_weights,
 		&bit_weights,
 	);
-	let reduced_eval = compose_chi_iota_from_low_vectors(
+	let chi_iota_eval = compose_chi_iota_from_low_vectors(
 		&pre_chi_low_vectors,
 		&reduction.output_claim.lane_weights,
 		reduction.round,
 		&bit_weights,
 	);
-	channel.assert_zero(output_eval + reduced_eval - mlecheck_output.eval)?;
+	channel.assert_zero(chi_iota_eval - mlecheck_output.eval)?;
 
 	Ok(ChiIotaRoundOutput {
 		reduced_high_point,
@@ -238,7 +223,7 @@ fn validate_reduction<F: BinaryField, P: PackedField<Scalar = F>>(
 	Ok(())
 }
 
-fn lane_block_tables<F: Field, P: PackedField<Scalar = F>>(
+pub(crate) fn lane_block_tables<F: Field, P: PackedField<Scalar = F>>(
 	lane_tables: &LaneTables<P>,
 ) -> [Vec<[F; BIT_INDEX_SIZE]>; 25] {
 	array::from_fn(|lane| {
@@ -255,7 +240,7 @@ fn lane_block_tables<F: Field, P: PackedField<Scalar = F>>(
 	})
 }
 
-fn evaluate_lane_low_vectors<F: Field, P: PackedField<Scalar = F>>(
+pub(crate) fn evaluate_lane_low_vectors<F: Field, P: PackedField<Scalar = F>>(
 	lane_tables: &LaneTables<P>,
 	high_point: &[F],
 ) -> [[F; BIT_INDEX_SIZE]; 25] {
@@ -281,7 +266,7 @@ fn evaluate_lane_low_vectors<F: Field, P: PackedField<Scalar = F>>(
 	})
 }
 
-fn fold_low_vectors<F: Field>(
+pub(crate) fn fold_low_vectors<F: Field>(
 	lane_low_vectors: &[[F; BIT_INDEX_SIZE]; 25],
 	bit_weights: &[F; BIT_INDEX_SIZE],
 ) -> [F; 25] {
@@ -298,7 +283,7 @@ fn mixed_output_from_low_vectors<F: Field>(
 		.fold(F::ZERO, |acc, (weight, eval)| acc + *weight * eval)
 }
 
-fn compose_chi_iota_from_low_vectors<F: Field>(
+pub(crate) fn compose_chi_iota_from_low_vectors<F: Field>(
 	pre_chi_low_vectors: &[[F; BIT_INDEX_SIZE]; 25],
 	lane_weights: &[F; 25],
 	round: usize,
@@ -330,7 +315,7 @@ fn compose_chi_iota_from_low_vectors<F: Field>(
 		})
 }
 
-fn compose_chi_iota_infinity_from_low_vectors<F: Field>(
+pub(crate) fn compose_chi_iota_infinity_from_low_vectors<F: Field>(
 	pre_chi_inf_vectors: &[[F; BIT_INDEX_SIZE]; 25],
 	lane_weights: &[F; 25],
 	bit_weights: &[F; BIT_INDEX_SIZE],
@@ -352,11 +337,11 @@ fn compose_chi_iota_infinity_from_low_vectors<F: Field>(
 		})
 }
 
-fn dot_64<F: Field>(lhs: &[F; BIT_INDEX_SIZE], rhs: &[F; BIT_INDEX_SIZE]) -> F {
+pub(crate) fn dot_64<F: Field>(lhs: &[F; BIT_INDEX_SIZE], rhs: &[F; BIT_INDEX_SIZE]) -> F {
 	std::iter::zip(lhs, rhs).fold(F::ZERO, |acc, (lhs_i, rhs_i)| acc + *lhs_i * *rhs_i)
 }
 
-fn fold_block_tables_inplace<F: Field>(
+pub(crate) fn fold_block_tables_inplace<F: Field>(
 	lane_blocks: &mut [Vec<[F; BIT_INDEX_SIZE]>; 25],
 	challenge: F,
 ) {
@@ -371,7 +356,7 @@ fn fold_block_tables_inplace<F: Field>(
 	}
 }
 
-fn interpolate_round_coeffs<F: Field>(sum: F, alpha: F, y_1: F, y_inf: F) -> RoundCoeffs<F> {
+pub(crate) fn interpolate_round_coeffs<F: Field>(sum: F, alpha: F, y_1: F, y_inf: F) -> RoundCoeffs<F> {
 	let y_0 = (sum - y_1 * alpha) * (F::ONE - alpha).invert_or_zero();
 	let c_0 = y_0;
 	let c_2 = y_inf;
@@ -379,53 +364,48 @@ fn interpolate_round_coeffs<F: Field>(sum: F, alpha: F, y_1: F, y_inf: F) -> Rou
 	RoundCoeffs(vec![c_0, c_1, c_2])
 }
 
-struct ChiBitIndexedProver<F: Field> {
-	output_blocks: [Vec<[F; BIT_INDEX_SIZE]>; 25],
-	pre_chi_blocks: [Vec<[F; BIT_INDEX_SIZE]>; 25],
-	bit_weights: [F; BIT_INDEX_SIZE],
-	lane_weights: [F; 25],
-	last_coeffs_or_eval: RoundCoeffsOrEval<F>,
-	eval_point: Vec<F>,
+struct ChiBitIndexedProver<P: PackedField> {
+	pre_chi_blocks: [Vec<[P::Scalar; BIT_INDEX_SIZE]>; 25],
+	bit_weights: [P::Scalar; BIT_INDEX_SIZE],
+	lane_weights: [P::Scalar; 25],
+	last_coeffs_or_eval: RoundCoeffsOrEval<P::Scalar>,
 	round: usize,
-	n_vars_remaining: usize,
+	gruen32: Gruen32<P>,
 }
 
-impl<F: Field> ChiBitIndexedProver<F> {
+impl<F: Field, P: PackedField<Scalar = F>> ChiBitIndexedProver<P> {
 	fn new(
-		output_blocks: [Vec<[F; BIT_INDEX_SIZE]>; 25],
 		pre_chi_blocks: [Vec<[F; BIT_INDEX_SIZE]>; 25],
 		bit_weights: [F; BIT_INDEX_SIZE],
 		lane_weights: [F; 25],
 		round: usize,
 		eval_point: Vec<F>,
+		mixed_eval: F,
 	) -> Result<Self, SumcheckError> {
 		let expected_len = 1usize << eval_point.len();
-		if output_blocks
+		if pre_chi_blocks
 			.iter()
 			.any(|blocks| blocks.len() != expected_len)
-			|| pre_chi_blocks
-				.iter()
-				.any(|blocks| blocks.len() != expected_len)
 		{
 			return Err(SumcheckError::MultilinearSizeMismatch);
 		}
 
+		let gruen32 = Gruen32::new(&eval_point);
+
 		Ok(Self {
-			output_blocks,
 			pre_chi_blocks,
 			bit_weights,
 			lane_weights,
-			last_coeffs_or_eval: RoundCoeffsOrEval::Eval(F::ZERO),
-			n_vars_remaining: eval_point.len(),
-			eval_point,
+			last_coeffs_or_eval: RoundCoeffsOrEval::Eval(mixed_eval),
 			round,
+			gruen32,
 		})
 	}
 }
 
-impl<F: Field> SumcheckProver<F> for ChiBitIndexedProver<F> {
+impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for ChiBitIndexedProver<P> {
 	fn n_vars(&self) -> usize {
-		self.n_vars_remaining
+		self.gruen32.n_vars_remaining()
 	}
 
 	fn n_claims(&self) -> usize {
@@ -437,40 +417,40 @@ impl<F: Field> SumcheckProver<F> for ChiBitIndexedProver<F> {
 			RoundCoeffsOrEval::Eval(eval) => eval,
 			RoundCoeffsOrEval::Coeffs(_) => return Err(SumcheckError::ExpectedFold),
 		};
-		let alpha = self.eval_point[self.n_vars_remaining - 1];
-		let split = 1usize << self.n_vars_remaining.saturating_sub(1);
-		let eq_expansion = if self.n_vars_remaining <= 1 {
-			vec![F::ONE]
-		} else {
-			eq_ind_partial_eval_scalars(&self.eval_point[..self.n_vars_remaining - 1])
-		};
-		let mut y_1 = F::ZERO;
-		let mut y_inf = F::ZERO;
+		let n_vars_remaining = self.gruen32.n_vars_remaining();
+		let alpha = self.gruen32.next_coordinate();
+		let split = 1usize << n_vars_remaining.saturating_sub(1);
+		let eq_scalars: Vec<F> =
+			self.gruen32.eq_expansion().iter_scalars().take(split).collect();
 
-		for (i, eq_i) in eq_expansion.into_iter().enumerate() {
-			let output_1 = array::from_fn(|lane| self.output_blocks[lane][split + i]);
-			let pre_chi_1 = array::from_fn(|lane| self.pre_chi_blocks[lane][split + i]);
-			let pre_chi_inf = array::from_fn(|lane| {
-				array::from_fn(|bit| {
-					self.pre_chi_blocks[lane][i][bit] + self.pre_chi_blocks[lane][split + i][bit]
-				})
-			});
+		let (y_1, y_inf) = eq_scalars
+			.into_par_iter()
+			.enumerate()
+			.map(|(i, eq_i)| {
+				let pre_chi_1 = array::from_fn(|lane| self.pre_chi_blocks[lane][split + i]);
+				let pre_chi_inf: [_; 25] = array::from_fn(|lane| {
+					array::from_fn(|bit| {
+						self.pre_chi_blocks[lane][i][bit]
+							+ self.pre_chi_blocks[lane][split + i][bit]
+					})
+				});
 
-			y_1 += eq_i
-				* (mixed_output_from_low_vectors(&output_1, &self.lane_weights, &self.bit_weights)
-					+ compose_chi_iota_from_low_vectors(
+				let contrib_1 = eq_i
+					* compose_chi_iota_from_low_vectors(
 						&pre_chi_1,
 						&self.lane_weights,
 						self.round,
 						&self.bit_weights,
-					));
-			y_inf += eq_i
-				* compose_chi_iota_infinity_from_low_vectors(
-					&pre_chi_inf,
-					&self.lane_weights,
-					&self.bit_weights,
-				);
-		}
+					);
+				let contrib_inf = eq_i
+					* compose_chi_iota_infinity_from_low_vectors(
+						&pre_chi_inf,
+						&self.lane_weights,
+						&self.bit_weights,
+					);
+				(contrib_1, contrib_inf)
+			})
+			.reduce(|| (F::ZERO, F::ZERO), |(a1, ai), (b1, bi)| (a1 + b1, ai + bi));
 
 		let round_coeffs = interpolate_round_coeffs(last_eval, alpha, y_1, y_inf);
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Coeffs(round_coeffs.clone());
@@ -483,15 +463,14 @@ impl<F: Field> SumcheckProver<F> for ChiBitIndexedProver<F> {
 			RoundCoeffsOrEval::Eval(_) => return Err(SumcheckError::ExpectedExecute),
 		};
 
-		fold_block_tables_inplace(&mut self.output_blocks, challenge);
 		fold_block_tables_inplace(&mut self.pre_chi_blocks, challenge);
-		self.n_vars_remaining -= 1;
+		self.gruen32.fold(challenge);
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Eval(coeffs.evaluate(challenge));
 		Ok(())
 	}
 
 	fn finish(self) -> Result<Vec<F>, SumcheckError> {
-		if self.n_vars_remaining > 0 {
+		if self.gruen32.n_vars_remaining() > 0 {
 			return Err(match self.last_coeffs_or_eval {
 				RoundCoeffsOrEval::Coeffs(_) => SumcheckError::ExpectedFold,
 				RoundCoeffsOrEval::Eval(_) => SumcheckError::ExpectedExecute,
@@ -506,9 +485,10 @@ impl<F: Field> SumcheckProver<F> for ChiBitIndexedProver<F> {
 	}
 }
 
-impl<F: Field> MleCheckProver<F> for ChiBitIndexedProver<F> {
+impl<F: Field, P: PackedField<Scalar = F>> MleCheckProver<F> for ChiBitIndexedProver<P> {
 	fn eval_point(&self) -> &[F] {
-		&self.eval_point[..self.n_vars_remaining]
+		let n = self.gruen32.n_vars_remaining();
+		&self.gruen32.eval_point()[..n]
 	}
 }
 

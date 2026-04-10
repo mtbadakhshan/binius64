@@ -13,6 +13,7 @@ binius-ip = { path = "../ip" }
 binius-ip-prover = { path = "../ip-prover" }
 binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
+rayon.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

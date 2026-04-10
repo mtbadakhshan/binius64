@@ -5,8 +5,8 @@ use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 
 use crate::{
-	BitIndexedEndpointClaims, ChiIotaReduction, Error, FullTrace, LinearRoundReduction,
-	bit_indexed_claim_from_evals, bit_indexed_lane_claim, chi_iota, linear_round,
+	BitIndexedEndpointClaims, Error, FullTrace, FusedRoundReduction,
+	bit_indexed_claim_from_evals, bit_indexed_lane_claim, fused_round,
 };
 
 /// Prove the full standalone 24-round KeccakCheck over an explicit public trace.
@@ -53,26 +53,12 @@ where
 			round
 		)
 		.entered();
-		let chi_iota_output = chi_iota::prove_round::<P, _>(
-			trace.round_output(round),
-			&trace.rounds[round].pre_chi,
-			&ChiIotaReduction {
+		let fused_output = fused_round::prove_round::<P, _>(
+			&trace.rounds[round].input,
+			&FusedRoundReduction {
 				output_claim: carried_output_claim,
 				round,
 			},
-			channel,
-		)?;
-
-		let pre_chi_weights = channel.sample_array::<25>();
-		let pre_chi_claim = bit_indexed_claim_from_evals(
-			output_bit_challenge,
-			chi_iota_output.reduced_high_point,
-			pre_chi_weights,
-			chi_iota_output.pre_chi_evals,
-		);
-		let linear_output = linear_round::prove_round::<P, _>(
-			&trace.rounds[round].input,
-			&LinearRoundReduction { pre_chi_claim },
 			channel,
 		)?;
 
@@ -80,17 +66,17 @@ where
 			let next_output_weights = channel.sample_array::<25>();
 			carried_output_claim = bit_indexed_claim_from_evals(
 				output_bit_challenge,
-				linear_output.reduced_high_point,
+				fused_output.reduced_high_point,
 				next_output_weights,
-				linear_output.input_evals,
+				fused_output.input_evals,
 			);
 		} else {
 			let input_weights = channel.sample_array::<25>();
 			let input_claim = bit_indexed_claim_from_evals(
 				output_bit_challenge,
-				linear_output.reduced_high_point,
+				fused_output.reduced_high_point,
 				input_weights,
-				linear_output.input_evals,
+				fused_output.input_evals,
 			);
 
 			return Ok(BitIndexedEndpointClaims {
@@ -147,29 +133,12 @@ where
 			round
 		)
 		.entered();
-		// The carried output claim is verifier-derived, and `FullTrace` encodes round outputs
-		// structurally through the next round's input, so we do not recompute this output claim
-		// from explicit tables again inside `chi_iota`.
-		let chi_iota_output = chi_iota::verify_round_with_protocol_validated_output_claim::<F, P, _>(
-			trace.round_output(round),
-			&trace.rounds[round].pre_chi,
-			&ChiIotaReduction {
+		let fused_output = fused_round::verify_round::<F, P, _>(
+			&trace.rounds[round].input,
+			&FusedRoundReduction {
 				output_claim: carried_output_claim,
 				round,
 			},
-			channel,
-		)?;
-
-		let pre_chi_weights = channel.sample_array::<25>();
-		let pre_chi_claim = bit_indexed_claim_from_evals(
-			output_bit_challenge,
-			chi_iota_output.reduced_high_point,
-			pre_chi_weights,
-			chi_iota_output.pre_chi_evals,
-		);
-		let linear_output = linear_round::verify_round::<F, P, _>(
-			&trace.rounds[round].input,
-			&LinearRoundReduction { pre_chi_claim },
 			channel,
 		)?;
 
@@ -177,17 +146,17 @@ where
 			let next_output_weights = channel.sample_array::<25>();
 			carried_output_claim = bit_indexed_claim_from_evals(
 				output_bit_challenge,
-				linear_output.reduced_high_point,
+				fused_output.reduced_high_point,
 				next_output_weights,
-				linear_output.input_evals,
+				fused_output.input_evals,
 			);
 		} else {
 			let input_weights = channel.sample_array::<25>();
 			let input_claim = bit_indexed_claim_from_evals(
 				output_bit_challenge,
-				linear_output.reduced_high_point,
+				fused_output.reduced_high_point,
 				input_weights,
-				linear_output.input_evals,
+				fused_output.input_evals,
 			);
 
 			return Ok(BitIndexedEndpointClaims {
@@ -271,9 +240,9 @@ mod tests {
 		];
 		let trace = trace_from_inputs::<P>(&inputs);
 		let mut corrupted_trace = trace.clone();
-		let current = corrupted_trace.rounds[5].pre_chi[0].get(0);
+		let current = corrupted_trace.rounds[5].input[0].get(0);
 		let flipped = if current == F::ZERO { F::ONE } else { F::ZERO };
-		corrupted_trace.rounds[5].pre_chi[0].set(0, flipped);
+		corrupted_trace.rounds[5].input[0].set(0, flipped);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prove(&corrupted_trace, &mut prover_transcript).unwrap();

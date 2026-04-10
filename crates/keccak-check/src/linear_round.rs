@@ -60,15 +60,15 @@ pub struct LinearRoundOutput<F> {
 }
 
 #[derive(Debug)]
-struct LinearRecipeStatic {
-	rot_views: Vec<RotView>,
-	recipe_counts: [Vec<(usize, u8)>; 25],
-	lane_views: [Vec<(u32, usize)>; 25],
-	unique_rotations: Vec<u32>,
-	rotation_index: BTreeMap<u32, usize>,
+pub(crate) struct LinearRecipeStatic {
+	pub(crate) rot_views: Vec<RotView>,
+	pub(crate) recipe_counts: [Vec<(usize, u8)>; 25],
+	pub(crate) lane_views: [Vec<(u32, usize)>; 25],
+	pub(crate) unique_rotations: Vec<u32>,
+	pub(crate) rotation_index: BTreeMap<u32, usize>,
 }
 
-fn linear_recipe_static() -> &'static LinearRecipeStatic {
+pub(crate) fn linear_recipe_static() -> &'static LinearRecipeStatic {
 	static LINEAR_RECIPE: OnceLock<LinearRecipeStatic> = OnceLock::new();
 	LINEAR_RECIPE.get_or_init(|| {
 		let mut rot_view_indices = BTreeMap::<RotView, usize>::new();
@@ -302,7 +302,7 @@ fn add_recipe_count(
 		.or_insert(1);
 }
 
-fn coeff_from_count<F: Field>(count: u8) -> F {
+pub(crate) fn coeff_from_count<F: Field>(count: u8) -> F {
 	(0..count).fold(F::ZERO, |acc, _| acc + F::ONE)
 }
 

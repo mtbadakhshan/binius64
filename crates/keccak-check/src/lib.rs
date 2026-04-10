@@ -32,6 +32,7 @@ use binius_field::{BinaryField, Field, PackedField};
 use binius_math::{FieldBuffer, multilinear::evaluate::evaluate};
 
 pub mod chi_iota;
+pub mod fused_round;
 pub mod linear_round;
 pub mod protocol;
 pub mod rotation;
@@ -40,6 +41,10 @@ pub mod trace;
 pub use chi_iota::{
 	ChiIotaReduction, ChiIotaRoundOutput, prove_round as prove_chi_iota_round,
 	verify_round as verify_chi_iota_round,
+};
+pub use fused_round::{
+	FusedRoundOutput, FusedRoundReduction, prove_round as prove_fused_round,
+	verify_round as verify_fused_round,
 };
 pub use linear_round::{
 	LinearRecipe, LinearRecipeTerm, LinearRoundOutput, LinearRoundReduction, RotView,
