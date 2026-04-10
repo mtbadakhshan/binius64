@@ -117,15 +117,35 @@ where
 {
 	assert!(reduction.round < 24, "precondition: round must be < 24");
 	validate_reduction(output, pre_chi, reduction)?;
-	let _phase_guard = tracing::info_span!(
-		"[phase] Keccak ChiIota Verify",
-		phase = "keccak_chi_iota_verify",
-		perfetto_category = "phase",
-		round = reduction.round,
-		n_vars = reduction.output_claim.high_point.len()
-	)
-	.entered();
+	validate_output_claim_against_tables(output, reduction)?;
+	verify_round_assuming_valid_output_claim(output, pre_chi, reduction, channel)
+}
 
+/// Verify one `chi+iota` round assuming the enclosing protocol has already established that
+/// `reduction.output_claim` matches `output`.
+///
+/// This is only sound when the caller derives `reduction.output_claim` itself from prior verified
+/// reductions and separately checks explicit round chaining.
+pub(crate) fn verify_round_with_protocol_validated_output_claim<F, P, Channel>(
+	output: &LaneTables<P>,
+	pre_chi: &LaneTables<P>,
+	reduction: &ChiIotaReduction<F>,
+	channel: &mut Channel,
+) -> Result<ChiIotaRoundOutput<F>, Error>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPVerifierChannel<F, Elem = F>,
+{
+	assert!(reduction.round < 24, "precondition: round must be < 24");
+	validate_reduction(output, pre_chi, reduction)?;
+	verify_round_assuming_valid_output_claim(output, pre_chi, reduction, channel)
+}
+
+fn validate_output_claim_against_tables<F: BinaryField, P: PackedField<Scalar = F>>(
+	output: &LaneTables<P>,
+	reduction: &ChiIotaReduction<F>,
+) -> Result<(), Error> {
 	let expected_output_claim = crate::bit_indexed_lane_claim(
 		output,
 		reduction.output_claim.bit_challenge,
@@ -135,6 +155,29 @@ where
 	if reduction.output_claim != expected_output_claim {
 		return Err(Error::InvalidClaim("output claim does not match the explicit output tables"));
 	}
+
+	Ok(())
+}
+
+fn verify_round_assuming_valid_output_claim<F, P, Channel>(
+	output: &LaneTables<P>,
+	pre_chi: &LaneTables<P>,
+	reduction: &ChiIotaReduction<F>,
+	channel: &mut Channel,
+) -> Result<ChiIotaRoundOutput<F>, Error>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPVerifierChannel<F, Elem = F>,
+{
+	let _phase_guard = tracing::info_span!(
+		"[phase] Keccak ChiIota Verify",
+		phase = "keccak_chi_iota_verify",
+		perfetto_category = "phase",
+		round = reduction.round,
+		n_vars = reduction.output_claim.high_point.len()
+	)
+	.entered();
 
 	let mlecheck_output =
 		mlecheck::verify(&reduction.output_claim.high_point, 2, F::ZERO, channel)?;
@@ -503,31 +546,27 @@ mod tests {
 		];
 		let trace = trace_from_inputs::<P>(&inputs);
 		let round_trace = &trace.rounds[0];
+		let output = trace.round_output(0);
 
 		let bit_challenge = F::random(&mut rng);
 		let high_point = random_scalars::<F>(&mut rng, 1);
 		let lane_weights = array::from_fn(|_| F::random(&mut rng));
-		let output_claim =
-			bit_indexed_lane_claim(&round_trace.output, bit_challenge, &high_point, lane_weights);
+		let output_claim = bit_indexed_lane_claim(output, bit_challenge, &high_point, lane_weights);
 		let reduction = ChiIotaReduction {
 			output_claim,
 			round: 0,
 		};
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prove_round::<P, _>(
-			&round_trace.output,
-			&round_trace.pre_chi,
-			&reduction,
-			&mut prover_transcript,
-		)
-		.unwrap();
+		let prover_output =
+			prove_round::<P, _>(output, &round_trace.pre_chi, &reduction, &mut prover_transcript)
+				.unwrap();
 		let proof_bytes = prover_transcript.finalize();
 
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
 		let verifier_output = verify_round::<F, P, _>(
-			&round_trace.output,
+			output,
 			&round_trace.pre_chi,
 			&reduction,
 			&mut verifier_transcript,
@@ -553,6 +592,7 @@ mod tests {
 		];
 		let trace = trace_from_inputs::<P>(&inputs);
 		let round_trace = &trace.rounds[0];
+		let output = trace.round_output(0);
 
 		let mut corrupted_pre_chi = round_trace.pre_chi.clone();
 		let current = corrupted_pre_chi[0].get(0);
@@ -562,28 +602,22 @@ mod tests {
 		let bit_challenge = F::random(&mut rng);
 		let high_point = random_scalars::<F>(&mut rng, 1);
 		let lane_weights = array::from_fn(|_| F::random(&mut rng));
-		let output_claim =
-			bit_indexed_lane_claim(&round_trace.output, bit_challenge, &high_point, lane_weights);
+		let output_claim = bit_indexed_lane_claim(output, bit_challenge, &high_point, lane_weights);
 		let reduction = ChiIotaReduction {
 			output_claim,
 			round: 0,
 		};
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prove_round::<P, _>(
-			&round_trace.output,
-			&corrupted_pre_chi,
-			&reduction,
-			&mut prover_transcript,
-		)
-		.unwrap();
+		prove_round::<P, _>(output, &corrupted_pre_chi, &reduction, &mut prover_transcript)
+			.unwrap();
 		let proof_bytes = prover_transcript.finalize();
 
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
 		assert!(
 			verify_round::<F, P, _>(
-				&round_trace.output,
+				output,
 				&round_trace.pre_chi,
 				&reduction,
 				&mut verifier_transcript,
@@ -598,6 +632,7 @@ mod tests {
 		let input_state = array::from_fn(|_| rng.random::<u64>());
 		let trace = trace_from_inputs::<P>(&[input_state]);
 		let round_trace = &trace.rounds[0];
+		let output = trace.round_output(0);
 		let bit_challenge = {
 			use binius_math::BinarySubspace;
 			BinarySubspace::<F>::with_dim(LOG_BIT_INDEX_VARS)
@@ -607,26 +642,21 @@ mod tests {
 		};
 		let high_point = Vec::new();
 		let lane_weights = array::from_fn(|_| F::random(&mut rng));
-		let output_claim =
-			bit_indexed_lane_claim(&round_trace.output, bit_challenge, &high_point, lane_weights);
+		let output_claim = bit_indexed_lane_claim(output, bit_challenge, &high_point, lane_weights);
 		let reduction = ChiIotaReduction {
 			output_claim,
 			round: 0,
 		};
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prove_round::<P, _>(
-			&round_trace.output,
-			&round_trace.pre_chi,
-			&reduction,
-			&mut prover_transcript,
-		)
-		.unwrap();
+		let prover_output =
+			prove_round::<P, _>(output, &round_trace.pre_chi, &reduction, &mut prover_transcript)
+				.unwrap();
 
 		assert_eq!(
 			prover_output.reduced_eval,
 			mixed_output_from_low_vectors(
-				&evaluate_lane_low_vectors(&round_trace.output, &prover_output.reduced_high_point),
+				&evaluate_lane_low_vectors(output, &prover_output.reduced_high_point),
 				&reduction.output_claim.lane_weights,
 				&bit_lagrange_weights(bit_challenge),
 			)

@@ -333,7 +333,7 @@ mod tests {
 			array::from_fn(|_| rng.random::<u64>()),
 		];
 		let trace = trace_from_inputs::<P>(&inputs);
-		let lane_tables = &trace.rounds[0].output;
+		let lane_tables = trace.round_output(0);
 		let bit_challenge = F::random(&mut rng);
 		let high_point =
 			random_scalars::<F>(&mut rng, lane_tables[0].log_len() - LOG_BIT_INDEX_VARS);

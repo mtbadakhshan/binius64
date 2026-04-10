@@ -30,19 +30,15 @@ where
 	)
 	.entered();
 
-	let output_round = trace
-		.rounds
-		.last()
-		.ok_or(Error::InvalidClaim("trace must contain 24 rounds"))?;
 	let output_bit_challenge = channel.sample();
 	let output_high_point = channel.sample_many(
-		output_round.output[0]
+		trace.final_output[0]
 			.log_len()
 			.saturating_sub(crate::LOG_BIT_INDEX_VARS),
 	);
 	let output_weights = channel.sample_array::<25>();
 	let output_claim = bit_indexed_lane_claim(
-		&output_round.output,
+		&trace.final_output,
 		output_bit_challenge,
 		&output_high_point,
 		output_weights,
@@ -58,7 +54,7 @@ where
 		)
 		.entered();
 		let chi_iota_output = chi_iota::prove_round::<P, _>(
-			&trace.rounds[round].output,
+			trace.round_output(round),
 			&trace.rounds[round].pre_chi,
 			&ChiIotaReduction {
 				output_claim: carried_output_claim,
@@ -128,19 +124,15 @@ where
 	)
 	.entered();
 
-	let output_round = trace
-		.rounds
-		.last()
-		.ok_or(Error::InvalidClaim("trace must contain 24 rounds"))?;
 	let output_bit_challenge = channel.sample();
 	let output_high_point = channel.sample_many(
-		output_round.output[0]
+		trace.final_output[0]
 			.log_len()
 			.saturating_sub(crate::LOG_BIT_INDEX_VARS),
 	);
 	let output_weights = channel.sample_array::<25>();
 	let output_claim = bit_indexed_lane_claim(
-		&output_round.output,
+		&trace.final_output,
 		output_bit_challenge,
 		&output_high_point,
 		output_weights,
@@ -155,8 +147,11 @@ where
 			round
 		)
 		.entered();
-		let chi_iota_output = chi_iota::verify_round::<F, P, _>(
-			&trace.rounds[round].output,
+		// The carried output claim is verifier-derived, and `FullTrace` encodes round outputs
+		// structurally through the next round's input, so we do not recompute this output claim
+		// from explicit tables again inside `chi_iota`.
+		let chi_iota_output = chi_iota::verify_round_with_protocol_validated_output_claim::<F, P, _>(
+			trace.round_output(round),
 			&trace.rounds[round].pre_chi,
 			&ChiIotaReduction {
 				output_claim: carried_output_claim,
@@ -214,8 +209,14 @@ fn validate_trace<P: PackedField>(trace: &FullTrace<P>) -> Result<(), Error> {
 	if !trace.rounds.iter().all(|round| {
 		round.input.iter().all(|lane| lane.log_len() == log_len)
 			&& round.pre_chi.iter().all(|lane| lane.log_len() == log_len)
-			&& round.output.iter().all(|lane| lane.log_len() == log_len)
 	}) {
+		return Err(Error::InvalidClaim("all trace tables must share the same dimension"));
+	}
+	if !trace
+		.final_output
+		.iter()
+		.all(|lane| lane.log_len() == log_len)
+	{
 		return Err(Error::InvalidClaim("all trace tables must share the same dimension"));
 	}
 
@@ -281,5 +282,27 @@ mod tests {
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
 		assert!(verify::<F, P, _>(&trace, &mut verifier_transcript).is_err());
+	}
+
+	#[test]
+	fn test_protocol_rejects_corrupted_final_output() {
+		let mut rng = StdRng::seed_from_u64(12);
+		let inputs = vec![
+			array::from_fn(|_| rng.random::<u64>()),
+			array::from_fn(|_| rng.random::<u64>()),
+		];
+		let trace = trace_from_inputs::<P>(&inputs);
+		let mut corrupted_trace = trace.clone();
+		let current = corrupted_trace.final_output[0].get(0);
+		let flipped = if current == F::ZERO { F::ONE } else { F::ZERO };
+		corrupted_trace.final_output[0].set(0, flipped);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prove(&trace, &mut prover_transcript).unwrap();
+		let proof_bytes = prover_transcript.finalize();
+
+		let mut verifier_transcript =
+			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
+		assert!(verify::<F, P, _>(&corrupted_trace, &mut verifier_transcript).is_err());
 	}
 }

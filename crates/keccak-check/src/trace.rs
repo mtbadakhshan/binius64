@@ -61,14 +61,27 @@ pub struct RoundTrace<P: PackedField> {
 	pub input: LaneTables<P>,
 	/// Pre-chi state `P^(t) = pi(rho(theta(A^(t))))`.
 	pub pre_chi: LaneTables<P>,
-	/// Output state `O^(t) = iota(chi(P^(t))))`.
-	pub output: LaneTables<P>,
 }
 
 /// Explicit table trace for all 24 Keccak rounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FullTrace<P: PackedField> {
 	pub rounds: Vec<RoundTrace<P>>,
+	pub final_output: LaneTables<P>,
+}
+
+impl<P: PackedField> FullTrace<P> {
+	/// Return the explicit output tables for `round`.
+	///
+	/// For rounds `0..23`, the output is the next round's input. The final round output is stored
+	/// separately in `final_output`.
+	pub fn round_output(&self, round: usize) -> &LaneTables<P> {
+		assert!(round < self.rounds.len(), "precondition: round must be in bounds");
+		self.rounds
+			.get(round + 1)
+			.map(|next_round| &next_round.input)
+			.unwrap_or(&self.final_output)
+	}
 }
 
 /// Word-level batch trace for one Keccak round.
@@ -163,16 +176,25 @@ pub fn trace_from_inputs<P: PackedField>(inputs: &[[u64; 25]]) -> FullTrace<P> {
 		n_instances = inputs.len()
 	)
 	.entered();
-	let rounds = trace_words_from_inputs(inputs)
+	let word_trace = trace_words_from_inputs(inputs);
+	let final_output = state_batch_to_lane_tables(
+		&word_trace
+			.last()
+			.expect("trace_words_from_inputs must produce 24 rounds")
+			.output,
+	);
+	let rounds = word_trace
 		.into_iter()
 		.map(|round_trace| RoundTrace {
 			input: state_batch_to_lane_tables(&round_trace.input),
 			pre_chi: state_batch_to_lane_tables(&round_trace.pre_chi),
-			output: state_batch_to_lane_tables(&round_trace.output),
 		})
 		.collect();
 
-	FullTrace { rounds }
+	FullTrace {
+		rounds,
+		final_output,
+	}
 }
 
 /// Apply the linear `theta`, `rho`, and `pi` substeps to a Keccak state in place.
@@ -304,8 +326,13 @@ mod tests {
 		assert!(trace.rounds.iter().all(|round| {
 			round.input.iter().all(|lane| lane.log_len() == 8)
 				&& round.pre_chi.iter().all(|lane| lane.log_len() == 8)
-				&& round.output.iter().all(|lane| lane.log_len() == 8)
 		}));
+		assert!(trace.final_output.iter().all(|lane| lane.log_len() == 8));
+
+		for round in 0..23 {
+			assert_eq!(trace.round_output(round), &trace.rounds[round + 1].input);
+		}
+		assert_eq!(trace.round_output(23), &trace.final_output);
 
 		let point = random_scalars::<F>(&mut rng, 8);
 		let _ = evaluate(&trace.rounds[0].input[0], &point);
