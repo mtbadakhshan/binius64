@@ -1,0 +1,34 @@
+[package]
+name = "binius-keccak-check"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+binius-field = { path = "../field" }
+binius-ip = { path = "../ip" }
+binius-ip-prover = { path = "../ip-prover" }
+binius-math = { path = "../math" }
+binius-transcript = { path = "../transcript" }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+binius-circuits = { path = "../circuits" }
+binius-core = { path = "../core" }
+binius-examples = { path = "../examples" }
+binius-frontend = { path = "../frontend" }
+binius-verifier = { path = "../verifier" }
+binius-field = { path = "../field" }
+binius-math = { path = "../math", features = ["test-utils"] }
+criterion.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
+sha2.workspace = true
+tracing-profile.workspace = true
+
+[[bench]]
+name = "permutation_compare"
+harness = false
