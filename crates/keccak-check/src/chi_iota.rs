@@ -11,7 +11,7 @@ use binius_ip_prover::{
 
 use crate::{
 	Error, MixedClaim,
-	rotation::{round_constant_eval, round_constant_table},
+	rotation::round_constant_eval,
 	trace::{LaneTables, idx},
 };
 
@@ -61,24 +61,23 @@ where
 	)
 	.entered();
 
-	let log_h = reduction.output_claim.point.len() - 6;
-	let multilinears = array::from_fn(|index| {
-		if index < 25 {
-			pre_chi[index].clone()
-		} else {
-			round_constant_table::<P>(reduction.round, log_h)
-		}
-	});
+	let multilinears = array::from_fn(|index| pre_chi[index].clone());
 
 	let lane_weights = reduction.output_claim.lane_weights;
+	let packed_lane_weights = array::from_fn(|lane| P::broadcast(lane_weights[lane]));
 	let round = reduction.round;
 	let eval_point = reduction.output_claim.point.clone();
-	let eval_claim = reduction.output_claim.mixed_eval;
+	let eval_claim = chi_claim_eval(
+		reduction.output_claim.mixed_eval,
+		&lane_weights,
+		round,
+		&reduction.output_claim.point,
+	);
 
-	let prover = QuadraticMleCheckProver::<P, _, _, 26>::new(
+	let prover = QuadraticMleCheckProver::<P, _, _, 25>::new(
 		multilinears,
-		move |vals: [P; 26]| compose_chi_iota_packed(vals, &lane_weights),
-		move |vals: [P; 26]| compose_chi_iota_infinity_packed(vals, &lane_weights),
+		move |vals: [P; 25]| compose_chi_packed(vals, &packed_lane_weights),
+		move |vals: [P; 25]| compose_chi_infinity_packed(vals, &packed_lane_weights),
 		eval_point,
 		eval_claim,
 	)?;
@@ -127,12 +126,13 @@ where
 	)
 	.entered();
 
-	let mlecheck_output = mlecheck::verify(
-		&reduction.output_claim.point,
-		2,
+	let chi_claim = chi_claim_eval(
 		reduction.output_claim.mixed_eval,
-		channel,
-	)?;
+		&reduction.output_claim.lane_weights,
+		reduction.round,
+		&reduction.output_claim.point,
+	);
+	let mlecheck_output = mlecheck::verify(&reduction.output_claim.point, 2, chi_claim, channel)?;
 	let pre_chi_evals = channel
 		.recv_many(25)?
 		.try_into()
@@ -146,7 +146,13 @@ where
 		reduction.round,
 		&reduced_point,
 	);
-	channel.assert_zero(reduced_eval - mlecheck_output.eval)?;
+	let reduced_chi_eval = chi_claim_eval(
+		reduced_eval,
+		&reduction.output_claim.lane_weights,
+		reduction.round,
+		&reduced_point,
+	);
+	channel.assert_zero(reduced_chi_eval - mlecheck_output.eval)?;
 
 	Ok(ChiIotaRoundOutput {
 		reduced_point,
@@ -177,38 +183,32 @@ fn validate_reduction<P: PackedField>(
 	Ok(())
 }
 
-fn compose_chi_iota_packed<P: PackedField>(vals: [P; 26], lane_weights: &[P::Scalar; 25]) -> P {
-	let round_constant = vals[25];
-
+fn compose_chi_packed<P: PackedField>(vals: [P; 25], lane_weights: &[P; 25]) -> P {
 	(0..5)
 		.flat_map(|y| (0..5).map(move |x| (x, y)))
 		.fold(P::zero(), |acc, (x, y)| {
 			let a = vals[idx(x, y)];
 			let b = vals[idx((x + 1) % 5, y)];
 			let c = vals[idx((x + 2) % 5, y)];
-			let weight = P::broadcast(lane_weights[idx(x, y)]);
-			let iota_term = if x == 0 && y == 0 {
-				weight * round_constant
-			} else {
-				P::zero()
-			};
+			let weight = lane_weights[idx(x, y)];
 
-			acc + weight * (a + c + b * c) + iota_term
+			acc + weight * (a + c + b * c)
 		})
 }
 
-fn compose_chi_iota_infinity_packed<P: PackedField>(
-	vals: [P; 26],
-	lane_weights: &[P::Scalar; 25],
-) -> P {
+fn compose_chi_infinity_packed<P: PackedField>(vals: [P; 25], lane_weights: &[P; 25]) -> P {
 	(0..5)
 		.flat_map(|y| (0..5).map(move |x| (x, y)))
 		.fold(P::zero(), |acc, (x, y)| {
 			let b = vals[idx((x + 1) % 5, y)];
 			let c = vals[idx((x + 2) % 5, y)];
-			let weight = P::broadcast(lane_weights[idx(x, y)]);
+			let weight = lane_weights[idx(x, y)];
 			acc + weight * b * c
 		})
+}
+
+fn chi_claim_eval<F: Field>(mixed_eval: F, lane_weights: &[F; 25], round: usize, point: &[F]) -> F {
+	mixed_eval - lane_weights[idx(0, 0)] * round_constant_eval(round, point)
 }
 
 fn compose_chi_iota_scalar<F: Field>(
