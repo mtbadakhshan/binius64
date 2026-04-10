@@ -26,6 +26,7 @@ binius-verifier = { path = "../verifier" }
 binius-field = { path = "../field" }
 binius-math = { path = "../math", features = ["test-utils"] }
 criterion.workspace = true
+peakmem-alloc = "0.2.0"
 rand = { workspace = true, features = ["thread_rng"] }
 sha2.workspace = true
 tracing-profile.workspace = true

@@ -8,7 +8,8 @@ use binius_examples::{StdProver, StdVerifier, setup_sha256};
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_frontend::{Circuit, CircuitBuilder};
 use binius_keccak_check::{
-	FullTrace, prove as prove_protocol, trace_from_inputs, verify as verify_protocol,
+	CompactTrace, prove as prove_protocol, compact_trace_from_inputs,
+	verify as verify_protocol,
 };
 use binius_transcript::{
 	ProverTranscript as ProtocolProverTranscript, VerifierTranscript as ProtocolVerifierTranscript,
@@ -87,13 +88,13 @@ impl CircuitBatchCase {
 
 struct ProtocolBatchCase {
 	states: Vec<[u64; 25]>,
-	trace: FullTrace<OptimalPackedB128>,
+	trace: CompactTrace,
 	proof_bytes: Vec<u8>,
 }
 
 impl ProtocolBatchCase {
 	fn new(states: Vec<[u64; 25]>) -> Self {
-		let trace = trace_from_inputs::<OptimalPackedB128>(&states);
+		let trace = compact_trace_from_inputs(&states);
 		let proof_bytes = prove_protocol_bytes(&trace);
 
 		Self {
@@ -103,8 +104,8 @@ impl ProtocolBatchCase {
 		}
 	}
 
-	fn prepare_trace(&self) -> FullTrace<OptimalPackedB128> {
-		trace_from_inputs::<OptimalPackedB128>(&self.states)
+	fn prepare_trace(&self) -> CompactTrace {
+		compact_trace_from_inputs(&self.states)
 	}
 
 	fn prove_bytes(&self) -> Vec<u8> {
@@ -114,7 +115,7 @@ impl ProtocolBatchCase {
 	fn verify(&self) {
 		let mut verifier_transcript =
 			ProtocolVerifierTranscript::new(StdChallenger::default(), self.proof_bytes.clone());
-		verify_protocol::<OptimalB128, OptimalPackedB128, _>(&self.trace, &mut verifier_transcript)
+		verify_protocol::<OptimalB128, _>(&self.trace, &mut verifier_transcript)
 			.expect("keccak-check proof should verify");
 		verifier_transcript
 			.finalize()
@@ -170,9 +171,9 @@ fn prove_circuit_bytes(prover: &StdProver, witness: ValueVec) -> Vec<u8> {
 	prover_transcript.finalize()
 }
 
-fn prove_protocol_bytes(trace: &FullTrace<OptimalPackedB128>) -> Vec<u8> {
+fn prove_protocol_bytes(trace: &CompactTrace) -> Vec<u8> {
 	let mut prover_transcript = ProtocolProverTranscript::new(StdChallenger::default());
-	prove_protocol(trace, &mut prover_transcript)
+	prove_protocol::<OptimalPackedB128, _>(trace, &mut prover_transcript)
 		.expect("keccak-check proof generation should succeed");
 	prover_transcript.finalize()
 }

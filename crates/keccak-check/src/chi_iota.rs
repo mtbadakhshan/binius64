@@ -223,6 +223,27 @@ fn validate_reduction<F: BinaryField, P: PackedField<Scalar = F>>(
 	Ok(())
 }
 
+/// Convert word-level Keccak states directly to the block representation needed by the
+/// sumcheck prover, bypassing the intermediate `FieldBuffer` / `LaneTables` representation.
+pub(crate) fn words_to_block_tables<F: Field>(
+	words: &[[u64; 25]],
+) -> [Vec<[F; BIT_INDEX_SIZE]>; 25] {
+	array::from_fn(|lane| {
+		words
+			.iter()
+			.map(|state| {
+				array::from_fn(|bit| {
+					if (state[lane] >> bit) & 1 == 1 {
+						F::ONE
+					} else {
+						F::ZERO
+					}
+				})
+			})
+			.collect()
+	})
+}
+
 pub(crate) fn lane_block_tables<F: Field, P: PackedField<Scalar = F>>(
 	lane_tables: &LaneTables<P>,
 ) -> [Vec<[F; BIT_INDEX_SIZE]>; 25] {
@@ -260,6 +281,35 @@ pub(crate) fn evaluate_lane_low_vectors<F: Field, P: PackedField<Scalar = F>>(
 			let block = lane_tables[lane].chunk(LOG_BIT_INDEX_VARS, instance_index);
 			for (slot, value) in low_vector.iter_mut().zip(block.iter_scalars()) {
 				*slot += instance_weight * value;
+			}
+		}
+		low_vector
+	})
+}
+
+/// Evaluate the 25 lane multilinears at a high point, working directly from `u64` words
+/// without expanding to field elements.
+pub(crate) fn evaluate_lane_low_vectors_from_words<F: Field>(
+	words: &[[u64; 25]],
+	high_point: &[F],
+) -> [[F; BIT_INDEX_SIZE]; 25] {
+	let high_eq = if high_point.is_empty() {
+		vec![F::ONE]
+	} else {
+		eq_ind_partial_eval_scalars(high_point)
+	};
+
+	array::from_fn(|lane| {
+		let mut low_vector = [F::ZERO; BIT_INDEX_SIZE];
+		for (instance_index, &instance_weight) in high_eq.iter().enumerate() {
+			if instance_weight == F::ZERO {
+				continue;
+			}
+			let word = words[instance_index][lane];
+			for bit in 0..BIT_INDEX_SIZE {
+				if (word >> bit) & 1 == 1 {
+					low_vector[bit] += instance_weight;
+				}
 			}
 		}
 		low_vector

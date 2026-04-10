@@ -19,8 +19,9 @@ use crate::{
 	BIT_INDEX_SIZE, BitIndexedMixedClaim, Error, LOG_BIT_INDEX_VARS,
 	chi_iota::{
 		compose_chi_iota_from_low_vectors, compose_chi_iota_infinity_from_low_vectors,
-		evaluate_lane_low_vectors, fold_block_tables_inplace, fold_low_vectors,
-		interpolate_round_coeffs, lane_block_tables,
+		evaluate_lane_low_vectors, evaluate_lane_low_vectors_from_words,
+		fold_block_tables_inplace, fold_low_vectors, interpolate_round_coeffs,
+		lane_block_tables, words_to_block_tables,
 	},
 	linear_round::{coeff_from_count, linear_recipe_static},
 	rotation::bit_lagrange_weights,
@@ -134,6 +135,121 @@ where
 		reduced_high_point,
 		input_evals,
 	})
+}
+
+/// Prove one fused round from word-level input data.
+///
+/// Converts the `u64` words to block tables on the fly, avoiding the need
+/// for pre-expanded `LaneTables`.
+pub fn prove_round_from_words<P, Channel>(
+	input_words: &[[u64; 25]],
+	reduction: &FusedRoundReduction<P::Scalar>,
+	channel: &mut Channel,
+) -> Result<FusedRoundOutput<P::Scalar>, Error>
+where
+	P: PackedField,
+	P::Scalar: BinaryField,
+	Channel: IPProverChannel<P::Scalar>,
+{
+	validate_reduction_from_words(input_words, reduction)?;
+	let _phase_guard = tracing::info_span!(
+		"[phase] Keccak Fused Round Prove",
+		phase = "keccak_fused_prove",
+		perfetto_category = "phase",
+		round = reduction.round,
+		n_vars = reduction.output_claim.high_point.len()
+	)
+	.entered();
+
+	let bit_weights = bit_lagrange_weights(reduction.output_claim.bit_challenge);
+	let prover: FusedRoundProver<P> = FusedRoundProver::new(
+		words_to_block_tables(input_words),
+		bit_weights,
+		reduction.output_claim.lane_weights,
+		reduction.round,
+		reduction.output_claim.high_point.clone(),
+		reduction.output_claim.mixed_eval,
+	)?;
+	let proof_output = prove_single_mlecheck(prover, channel)?;
+	let input_evals: [P::Scalar; 25] = proof_output
+		.multilinear_evals
+		.try_into()
+		.map_err(|_| Error::InvalidClaim("expected 25 folded input evaluations"))?;
+	let mut reduced_high_point = proof_output.challenges;
+	reduced_high_point.reverse();
+
+	Ok(FusedRoundOutput {
+		reduced_high_point,
+		input_evals,
+	})
+}
+
+/// Verify one fused round from word-level input data.
+///
+/// Computes multilinear evaluations directly from `u64` words without
+/// expanding to `LaneTables`.
+pub fn verify_round_from_words<F, Channel>(
+	input_words: &[[u64; 25]],
+	reduction: &FusedRoundReduction<F>,
+	channel: &mut Channel,
+) -> Result<FusedRoundOutput<F>, Error>
+where
+	F: BinaryField,
+	Channel: IPVerifierChannel<F, Elem = F>,
+{
+	validate_reduction_from_words(input_words, reduction)?;
+	let _phase_guard = tracing::info_span!(
+		"[phase] Keccak Fused Round Verify",
+		phase = "keccak_fused_verify",
+		perfetto_category = "phase",
+		round = reduction.round,
+		n_vars = reduction.output_claim.high_point.len()
+	)
+	.entered();
+
+	let mlecheck_output = mlecheck::verify(
+		&reduction.output_claim.high_point,
+		2,
+		reduction.output_claim.mixed_eval,
+		channel,
+	)?;
+	let mut reduced_high_point = mlecheck_output.challenges;
+	reduced_high_point.reverse();
+	let bit_weights = bit_lagrange_weights(reduction.output_claim.bit_challenge);
+	let input_low_vectors =
+		evaluate_lane_low_vectors_from_words(input_words, &reduced_high_point);
+	let input_evals = fold_low_vectors(&input_low_vectors, &bit_weights);
+	let pre_chi_low_vectors = apply_linear_recipe_to_low_vectors(&input_low_vectors);
+	let fused_eval = compose_chi_iota_from_low_vectors(
+		&pre_chi_low_vectors,
+		&reduction.output_claim.lane_weights,
+		reduction.round,
+		&bit_weights,
+	);
+	channel.assert_zero(fused_eval - mlecheck_output.eval)?;
+
+	Ok(FusedRoundOutput {
+		reduced_high_point,
+		input_evals,
+	})
+}
+
+fn validate_reduction_from_words<F: BinaryField>(
+	input_words: &[[u64; 25]],
+	reduction: &FusedRoundReduction<F>,
+) -> Result<(), Error> {
+	if reduction.round >= 24 {
+		return Err(Error::InvalidRound(reduction.round));
+	}
+
+	let expected_n_instances = 1usize << reduction.output_claim.high_point.len();
+	if input_words.len() != expected_n_instances {
+		return Err(Error::InvalidClaim(
+			"input word count must match 2^high_point.len()",
+		));
+	}
+
+	Ok(())
 }
 
 fn validate_reduction<F: BinaryField, P: PackedField<Scalar = F>>(

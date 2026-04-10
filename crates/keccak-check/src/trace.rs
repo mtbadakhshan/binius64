@@ -162,6 +162,70 @@ pub fn trace_words_from_inputs(inputs: &[[u64; 25]]) -> Vec<RoundTraceWords> {
 		.collect()
 }
 
+/// Compact word-level trace for all 24 Keccak rounds.
+///
+/// Stores each round's input as native `u64` words instead of expanded field elements,
+/// reducing memory by ~240x compared to [`FullTrace`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactTrace {
+	/// Word-level round inputs, one `Vec<[u64; 25]>` per round (24 entries).
+	pub round_inputs: Vec<Vec<[u64; 25]>>,
+	/// Word-level final output state.
+	pub final_output: Vec<[u64; 25]>,
+}
+
+impl CompactTrace {
+	pub fn n_instances(&self) -> usize {
+		self.round_inputs[0].len()
+	}
+
+	pub fn log_n_instances(&self) -> usize {
+		self.n_instances().trailing_zeros() as usize
+	}
+}
+
+/// Materialize the full 24-round Keccak trace as compact word-level data.
+///
+/// This stores only the `u64` words for each round's input, avoiding the 128x blowup
+/// of expanding every bit into a 128-bit field element.
+///
+/// # Preconditions
+///
+/// - `inputs` must be non-empty
+/// - `inputs.len()` must be a power of two
+pub fn compact_trace_from_inputs(inputs: &[[u64; 25]]) -> CompactTrace {
+	assert!(!inputs.is_empty(), "precondition: inputs must be non-empty");
+	assert!(inputs.len().is_power_of_two(), "precondition: inputs.len() must be a power of two");
+	let _trace_guard = tracing::info_span!(
+		"Keccak Compact Trace",
+		operation = "keccak_compact_trace",
+		perfetto_category = "operation",
+		n_instances = inputs.len()
+	)
+	.entered();
+
+	let mut current = inputs.to_vec();
+	let mut round_inputs = Vec::with_capacity(24);
+
+	for round in 0..24 {
+		round_inputs.push(current.clone());
+		current = current
+			.iter()
+			.map(|state| {
+				let mut s = *state;
+				theta_rho_pi_words(&mut s);
+				chi_iota_words(&mut s, round);
+				s
+			})
+			.collect();
+	}
+
+	CompactTrace {
+		round_inputs,
+		final_output: current,
+	}
+}
+
 /// Materialize the full 24-round Keccak trace as lane multilinear tables.
 ///
 /// # Preconditions
@@ -309,6 +373,24 @@ mod tests {
 		for round in 0..23 {
 			assert_eq!(word_trace[round].output, word_trace[round + 1].input);
 		}
+	}
+
+	#[test]
+	fn test_compact_trace_matches_word_trace() {
+		let mut rng = StdRng::seed_from_u64(2);
+		let inputs = vec![
+			std::array::from_fn(|_| rng.random::<u64>()),
+			std::array::from_fn(|_| rng.random::<u64>()),
+		];
+
+		let compact = compact_trace_from_inputs(&inputs);
+		let word_trace = trace_words_from_inputs(&inputs);
+
+		assert_eq!(compact.round_inputs.len(), 24);
+		for round in 0..24 {
+			assert_eq!(compact.round_inputs[round], word_trace[round].input);
+		}
+		assert_eq!(compact.final_output, word_trace[23].output);
 	}
 
 	#[test]

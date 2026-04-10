@@ -1,43 +1,40 @@
 // Copyright 2026 The Binius Developers
 
-use binius_field::{BinaryField, PackedField};
+use binius_field::BinaryField;
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 
 use crate::{
-	BitIndexedEndpointClaims, Error, FullTrace, FusedRoundReduction,
-	bit_indexed_claim_from_evals, bit_indexed_lane_claim, fused_round,
+	BitIndexedEndpointClaims, Error, FusedRoundReduction, bit_indexed_claim_from_evals,
+	bit_indexed_lane_claim_from_words, fused_round,
+	trace::CompactTrace,
 };
 
-/// Prove the full standalone 24-round KeccakCheck over an explicit public trace.
+/// Prove the full standalone 24-round KeccakCheck over a compact word-level trace.
 pub fn prove<P, Channel>(
-	trace: &FullTrace<P>,
+	trace: &CompactTrace,
 	channel: &mut Channel,
 ) -> Result<BitIndexedEndpointClaims<P::Scalar>, Error>
 where
-	P: PackedField,
+	P: binius_field::PackedField,
 	P::Scalar: BinaryField,
 	Channel: IPProverChannel<P::Scalar>,
 {
-	validate_trace(trace)?;
-	let n_instances = 1usize << trace.rounds[0].input[0].log_len().saturating_sub(6);
+	validate_compact_trace(trace)?;
+	let n_instances = trace.n_instances();
 	let _prove_guard = tracing::info_span!(
 		"KeccakCheck Prove",
 		operation = "keccak_check_prove",
 		perfetto_category = "operation",
-		n_rounds = trace.rounds.len(),
+		n_rounds = 24,
 		n_instances
 	)
 	.entered();
 
 	let output_bit_challenge = channel.sample();
-	let output_high_point = channel.sample_many(
-		trace.final_output[0]
-			.log_len()
-			.saturating_sub(crate::LOG_BIT_INDEX_VARS),
-	);
+	let output_high_point = channel.sample_many(trace.log_n_instances());
 	let output_weights = channel.sample_array::<25>();
-	let output_claim = bit_indexed_lane_claim(
+	let output_claim = bit_indexed_lane_claim_from_words(
 		&trace.final_output,
 		output_bit_challenge,
 		&output_high_point,
@@ -45,7 +42,7 @@ where
 	);
 	let mut carried_output_claim = output_claim.clone();
 
-	for round in (0..trace.rounds.len()).rev() {
+	for round in (0..24).rev() {
 		let _round_guard = tracing::info_span!(
 			"[phase] Keccak Round Prove",
 			phase = "keccak_round_prove",
@@ -53,8 +50,8 @@ where
 			round
 		)
 		.entered();
-		let fused_output = fused_round::prove_round::<P, _>(
-			&trace.rounds[round].input,
+		let fused_output = fused_round::prove_round_from_words::<P, _>(
+			&trace.round_inputs[round],
 			&FusedRoundReduction {
 				output_claim: carried_output_claim,
 				round,
@@ -89,35 +86,30 @@ where
 	Err(Error::InvalidClaim("trace must contain at least one round"))
 }
 
-/// Verify the full standalone 24-round KeccakCheck over an explicit public trace.
-pub fn verify<F, P, Channel>(
-	trace: &FullTrace<P>,
+/// Verify the full standalone 24-round KeccakCheck over a compact word-level trace.
+pub fn verify<F, Channel>(
+	trace: &CompactTrace,
 	channel: &mut Channel,
 ) -> Result<BitIndexedEndpointClaims<F>, Error>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
 	Channel: IPVerifierChannel<F, Elem = F>,
 {
-	validate_trace(trace)?;
-	let n_instances = 1usize << trace.rounds[0].input[0].log_len().saturating_sub(6);
+	validate_compact_trace(trace)?;
+	let n_instances = trace.n_instances();
 	let _verify_guard = tracing::info_span!(
 		"KeccakCheck Verify",
 		operation = "keccak_check_verify",
 		perfetto_category = "operation",
-		n_rounds = trace.rounds.len(),
+		n_rounds = 24,
 		n_instances
 	)
 	.entered();
 
 	let output_bit_challenge = channel.sample();
-	let output_high_point = channel.sample_many(
-		trace.final_output[0]
-			.log_len()
-			.saturating_sub(crate::LOG_BIT_INDEX_VARS),
-	);
+	let output_high_point = channel.sample_many(trace.log_n_instances());
 	let output_weights = channel.sample_array::<25>();
-	let output_claim = bit_indexed_lane_claim(
+	let output_claim = bit_indexed_lane_claim_from_words(
 		&trace.final_output,
 		output_bit_challenge,
 		&output_high_point,
@@ -125,7 +117,7 @@ where
 	);
 	let mut carried_output_claim = output_claim.clone();
 
-	for round in (0..trace.rounds.len()).rev() {
+	for round in (0..24).rev() {
 		let _round_guard = tracing::info_span!(
 			"[phase] Keccak Round Verify",
 			phase = "keccak_round_verify",
@@ -133,8 +125,8 @@ where
 			round
 		)
 		.entered();
-		let fused_output = fused_round::verify_round::<F, P, _>(
-			&trace.rounds[round].input,
+		let fused_output = fused_round::verify_round_from_words::<F, _>(
+			&trace.round_inputs[round],
 			&FusedRoundReduction {
 				output_claim: carried_output_claim,
 				round,
@@ -169,24 +161,24 @@ where
 	Err(Error::InvalidClaim("trace must contain at least one round"))
 }
 
-fn validate_trace<P: PackedField>(trace: &FullTrace<P>) -> Result<(), Error> {
-	if trace.rounds.len() != 24 {
+fn validate_compact_trace(trace: &CompactTrace) -> Result<(), Error> {
+	if trace.round_inputs.len() != 24 {
 		return Err(Error::InvalidClaim("trace must contain exactly 24 rounds"));
 	}
 
-	let log_len = trace.rounds[0].input[0].log_len();
-	if !trace.rounds.iter().all(|round| {
-		round.input.iter().all(|lane| lane.log_len() == log_len)
-			&& round.pre_chi.iter().all(|lane| lane.log_len() == log_len)
-	}) {
-		return Err(Error::InvalidClaim("all trace tables must share the same dimension"));
+	let n_instances = trace.round_inputs[0].len();
+	if !n_instances.is_power_of_two() {
+		return Err(Error::InvalidClaim("number of instances must be a power of two"));
 	}
 	if !trace
-		.final_output
+		.round_inputs
 		.iter()
-		.all(|lane| lane.log_len() == log_len)
+		.all(|round| round.len() == n_instances)
 	{
-		return Err(Error::InvalidClaim("all trace tables must share the same dimension"));
+		return Err(Error::InvalidClaim("all rounds must have the same number of instances"));
+	}
+	if trace.final_output.len() != n_instances {
+		return Err(Error::InvalidClaim("final output must have the same number of instances"));
 	}
 
 	Ok(())
@@ -196,15 +188,12 @@ fn validate_trace<P: PackedField>(trace: &FullTrace<P>) -> Result<(), Error> {
 mod tests {
 	use std::array;
 
-	use binius_field::{
-		Field,
-		arch::{OptimalB128, OptimalPackedB128},
-	};
+	use binius_field::arch::{OptimalB128, OptimalPackedB128};
 	use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::trace::trace_from_inputs;
+	use crate::trace::compact_trace_from_inputs;
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
@@ -217,15 +206,15 @@ mod tests {
 			array::from_fn(|_| rng.random::<u64>()),
 			array::from_fn(|_| rng.random::<u64>()),
 		];
-		let trace = trace_from_inputs::<P>(&inputs);
+		let trace = compact_trace_from_inputs(&inputs);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prove(&trace, &mut prover_transcript).unwrap();
+		let prover_output = prove::<P, _>(&trace, &mut prover_transcript).unwrap();
 		let proof_bytes = prover_transcript.finalize();
 
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
-		let verifier_output = verify::<F, P, _>(&trace, &mut verifier_transcript).unwrap();
+		let verifier_output = verify::<F, _>(&trace, &mut verifier_transcript).unwrap();
 		verifier_transcript.finalize().unwrap();
 
 		assert_eq!(prover_output, verifier_output);
@@ -238,19 +227,17 @@ mod tests {
 			array::from_fn(|_| rng.random::<u64>()),
 			array::from_fn(|_| rng.random::<u64>()),
 		];
-		let trace = trace_from_inputs::<P>(&inputs);
+		let trace = compact_trace_from_inputs(&inputs);
 		let mut corrupted_trace = trace.clone();
-		let current = corrupted_trace.rounds[5].input[0].get(0);
-		let flipped = if current == F::ZERO { F::ONE } else { F::ZERO };
-		corrupted_trace.rounds[5].input[0].set(0, flipped);
+		corrupted_trace.round_inputs[5][0][0] ^= 1;
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prove(&corrupted_trace, &mut prover_transcript).unwrap();
+		prove::<P, _>(&corrupted_trace, &mut prover_transcript).unwrap();
 		let proof_bytes = prover_transcript.finalize();
 
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
-		assert!(verify::<F, P, _>(&trace, &mut verifier_transcript).is_err());
+		assert!(verify::<F, _>(&trace, &mut verifier_transcript).is_err());
 	}
 
 	#[test]
@@ -260,18 +247,16 @@ mod tests {
 			array::from_fn(|_| rng.random::<u64>()),
 			array::from_fn(|_| rng.random::<u64>()),
 		];
-		let trace = trace_from_inputs::<P>(&inputs);
+		let trace = compact_trace_from_inputs(&inputs);
 		let mut corrupted_trace = trace.clone();
-		let current = corrupted_trace.final_output[0].get(0);
-		let flipped = if current == F::ZERO { F::ONE } else { F::ZERO };
-		corrupted_trace.final_output[0].set(0, flipped);
+		corrupted_trace.final_output[0][0] ^= 1;
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prove(&trace, &mut prover_transcript).unwrap();
+		prove::<P, _>(&trace, &mut prover_transcript).unwrap();
 		let proof_bytes = prover_transcript.finalize();
 
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
-		assert!(verify::<F, P, _>(&corrupted_trace, &mut verifier_transcript).is_err());
+		assert!(verify::<F, _>(&corrupted_trace, &mut verifier_transcript).is_err());
 	}
 }

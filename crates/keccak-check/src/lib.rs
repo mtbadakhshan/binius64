@@ -53,8 +53,9 @@ pub use linear_round::{
 };
 pub use protocol::{prove, verify};
 pub use trace::{
-	FullTrace, LaneTables, RoundTrace, RoundTraceWords, state_batch_to_lane_tables,
-	trace_from_inputs, trace_words_from_inputs,
+	CompactTrace, FullTrace, LaneTables, RoundTrace, RoundTraceWords,
+	compact_trace_from_inputs, state_batch_to_lane_tables, trace_from_inputs,
+	trace_words_from_inputs,
 };
 
 /// A random linear combination claim over the 25 Keccak lanes at a single point.
@@ -173,6 +174,20 @@ where
 {
 	let folded_lanes = fold_lane_tables_at_bit_challenge(lane_tables, bit_challenge);
 	let lane_evals = array::from_fn(|lane| evaluate(&folded_lanes[lane], high_point));
+	bit_indexed_claim_from_evals(bit_challenge, high_point.to_vec(), lane_weights, lane_evals)
+}
+
+/// Build a mixed bit-indexed claim directly from word-level data, avoiding field-element
+/// expansion.
+pub fn bit_indexed_lane_claim_from_words<F: BinaryField>(
+	words: &[[u64; 25]],
+	bit_challenge: F,
+	high_point: &[F],
+	lane_weights: [F; 25],
+) -> BitIndexedMixedClaim<F> {
+	let bit_weights = rotation::bit_lagrange_weights(bit_challenge);
+	let low_vectors = chi_iota::evaluate_lane_low_vectors_from_words(words, high_point);
+	let lane_evals = chi_iota::fold_low_vectors(&low_vectors, &bit_weights);
 	bit_indexed_claim_from_evals(bit_challenge, high_point.to_vec(), lane_weights, lane_evals)
 }
 
