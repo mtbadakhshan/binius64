@@ -18,12 +18,11 @@ use rayon::prelude::*;
 use crate::{
 	BIT_INDEX_SIZE, BitIndexedMixedClaim, Error, LOG_BIT_INDEX_VARS,
 	chi_iota::{
-		compose_chi_iota_from_low_vectors, compose_chi_iota_infinity_from_low_vectors,
-		evaluate_lane_low_vectors, evaluate_lane_low_vectors_from_words,
-		fold_block_tables_inplace, fold_low_vectors, interpolate_round_coeffs,
-		lane_block_tables, words_to_block_tables,
+		compose_chi_iota_from_low_vectors, evaluate_lane_low_vectors,
+		evaluate_lane_low_vectors_from_words, fold_block_tables_inplace, fold_low_vectors,
+		interpolate_round_coeffs, lane_block_tables,
 	},
-	linear_round::{coeff_from_count, linear_recipe_static},
+	linear_round::linear_recipe_static,
 	rotation::bit_lagrange_weights,
 	trace::LaneTables,
 };
@@ -68,7 +67,7 @@ where
 	.entered();
 
 	let bit_weights = bit_lagrange_weights(reduction.output_claim.bit_challenge);
-	let prover: FusedRoundProver<P> = FusedRoundProver::new(
+	let prover: FusedRoundProver<'_, P> = FusedRoundProver::new(
 		lane_block_tables(input),
 		bit_weights,
 		reduction.output_claim.lane_weights,
@@ -162,8 +161,8 @@ where
 	.entered();
 
 	let bit_weights = bit_lagrange_weights(reduction.output_claim.bit_challenge);
-	let prover: FusedRoundProver<P> = FusedRoundProver::new(
-		words_to_block_tables(input_words),
+	let prover: FusedRoundProver<'_, P> = FusedRoundProver::new_from_words(
+		input_words,
 		bit_weights,
 		reduction.output_claim.lane_weights,
 		reduction.round,
@@ -216,8 +215,7 @@ where
 	let mut reduced_high_point = mlecheck_output.challenges;
 	reduced_high_point.reverse();
 	let bit_weights = bit_lagrange_weights(reduction.output_claim.bit_challenge);
-	let input_low_vectors =
-		evaluate_lane_low_vectors_from_words(input_words, &reduced_high_point);
+	let input_low_vectors = evaluate_lane_low_vectors_from_words(input_words, &reduced_high_point);
 	let input_evals = fold_low_vectors(&input_low_vectors, &bit_weights);
 	let pre_chi_low_vectors = apply_linear_recipe_to_low_vectors(&input_low_vectors);
 	let fused_eval = compose_chi_iota_from_low_vectors(
@@ -244,9 +242,7 @@ fn validate_reduction_from_words<F: BinaryField>(
 
 	let expected_n_instances = 1usize << reduction.output_claim.high_point.len();
 	if input_words.len() != expected_n_instances {
-		return Err(Error::InvalidClaim(
-			"input word count must match 2^high_point.len()",
-		));
+		return Err(Error::InvalidClaim("input word count must match 2^high_point.len()"));
 	}
 
 	Ok(())
@@ -273,35 +269,138 @@ fn validate_reduction<F: BinaryField, P: PackedField<Scalar = F>>(
 	Ok(())
 }
 
+#[inline]
 fn apply_linear_recipe_to_low_vectors<F: Field>(
 	input_low_vectors: &[[F; BIT_INDEX_SIZE]; 25],
 ) -> [[F; BIT_INDEX_SIZE]; 25] {
 	let static_recipe = linear_recipe_static();
 	array::from_fn(|output_lane| {
 		let mut pre_chi = [F::ZERO; BIT_INDEX_SIZE];
-		for &(rv_idx, count) in &static_recipe.recipe_counts[output_lane] {
-			let coeff = coeff_from_count::<F>(count);
-			if coeff == F::ZERO {
-				continue;
-			}
-			let rv = &static_recipe.rot_views[rv_idx];
+		for &(rv_idx, ref rotated_indices) in &static_recipe.binary_recipe[output_lane] {
+			let lane = static_recipe.rot_views[rv_idx].lane;
 			for b in 0..BIT_INDEX_SIZE {
-				let input_bit = (b + BIT_INDEX_SIZE - rv.rot as usize) % BIT_INDEX_SIZE;
-				pre_chi[b] += coeff * input_low_vectors[rv.lane][input_bit];
+				pre_chi[b] += input_low_vectors[lane][rotated_indices[b]];
 			}
 		}
 		pre_chi
 	})
 }
 
+#[cfg(test)]
+#[inline]
 fn apply_linear_recipe_to_blocks<F: Field>(
 	input_blocks: &[[F; BIT_INDEX_SIZE]; 25],
 ) -> [[F; BIT_INDEX_SIZE]; 25] {
 	apply_linear_recipe_to_low_vectors(input_blocks)
 }
 
-struct FusedRoundProver<P: PackedField> {
-	input_blocks: [Vec<[P::Scalar; BIT_INDEX_SIZE]>; 25],
+#[inline]
+fn fused_chi_linear_pair_eval_blocks<F: Field>(
+	input_lo: &[[F; BIT_INDEX_SIZE]; 25],
+	input_hi: &[[F; BIT_INDEX_SIZE]; 25],
+	lane_weights: &[F; 25],
+	round: usize,
+	bit_weights: &[F; BIT_INDEX_SIZE],
+) -> (F, F) {
+	let static_recipe = linear_recipe_static();
+	let round_constant_eval = crate::rotation::round_constant_from_bit_weights(round, bit_weights);
+	let mut acc_1 = lane_weights[0] * round_constant_eval;
+	let mut acc_inf = F::ZERO;
+
+	for y in 0..5 {
+		let mut row_pre_chi_1 = [[F::ZERO; BIT_INDEX_SIZE]; 5];
+		let mut row_pre_chi_inf = [[F::ZERO; BIT_INDEX_SIZE]; 5];
+		for x in 0..5 {
+			let out_lane = x + 5 * y;
+			for &(rv_idx, ref rotated_indices) in &static_recipe.binary_recipe[out_lane] {
+				let lane = static_recipe.rot_views[rv_idx].lane;
+				for b in 0..BIT_INDEX_SIZE {
+					let hi = input_hi[lane][rotated_indices[b]];
+					row_pre_chi_1[x][b] += hi;
+					row_pre_chi_inf[x][b] += input_lo[lane][rotated_indices[b]] + hi;
+				}
+			}
+		}
+
+		for x in 0..5 {
+			let out_lane = x + 5 * y;
+			let weight = lane_weights[out_lane];
+			let a_1 = &row_pre_chi_1[x];
+			let b_1 = &row_pre_chi_1[(x + 1) % 5];
+			let c_1 = &row_pre_chi_1[(x + 2) % 5];
+			let b_inf = &row_pre_chi_inf[(x + 1) % 5];
+			let c_inf = &row_pre_chi_inf[(x + 2) % 5];
+			let mut chi_eval_1 = F::ZERO;
+			let mut chi_eval_inf = F::ZERO;
+			for bit in 0..BIT_INDEX_SIZE {
+				chi_eval_1 += bit_weights[bit] * (a_1[bit] + c_1[bit] + b_1[bit] * c_1[bit]);
+				chi_eval_inf += bit_weights[bit] * b_inf[bit] * c_inf[bit];
+			}
+			acc_1 += weight * chi_eval_1;
+			acc_inf += weight * chi_eval_inf;
+		}
+	}
+	(acc_1, acc_inf)
+}
+
+#[inline]
+fn fused_chi_linear_word_pair_eval<F: Field>(
+	input_lo: &[u64; 25],
+	input_hi: &[u64; 25],
+	lane_weights: &[F; 25],
+	round: usize,
+	bit_weights: &[F; BIT_INDEX_SIZE],
+) -> (F, F) {
+	let static_recipe = linear_recipe_static();
+	let rc = crate::trace::RC[round];
+	let mut acc_1 = F::ZERO;
+	let mut acc_inf = F::ZERO;
+
+	for y in 0..5 {
+		let mut row_pre_chi_1 = [0u64; 5];
+		let mut row_pre_chi_inf = [0u64; 5];
+		for x in 0..5 {
+			let out_lane = x + 5 * y;
+			for &(src_lane, rot) in &static_recipe.word_recipe[out_lane] {
+				let hi = input_hi[src_lane].rotate_left(rot);
+				row_pre_chi_1[x] ^= hi;
+				row_pre_chi_inf[x] ^= input_lo[src_lane].rotate_left(rot) ^ hi;
+			}
+		}
+
+		for x in 0..5 {
+			let out_lane = x + 5 * y;
+			let weight = lane_weights[out_lane];
+			let a_1 = row_pre_chi_1[x];
+			let b_1 = row_pre_chi_1[(x + 1) % 5];
+			let c_1 = row_pre_chi_1[(x + 2) % 5];
+			let mut chi_bits_1 = a_1 ^ c_1 ^ (b_1 & c_1);
+			if x == 0 && y == 0 {
+				chi_bits_1 ^= rc;
+			}
+			let mut bits_1 = chi_bits_1;
+			while bits_1 != 0 {
+				let bit = bits_1.trailing_zeros() as usize;
+				acc_1 += weight * bit_weights[bit];
+				bits_1 &= bits_1 - 1;
+			}
+
+			let mut bits_inf = row_pre_chi_inf[(x + 1) % 5] & row_pre_chi_inf[(x + 2) % 5];
+			while bits_inf != 0 {
+				let bit = bits_inf.trailing_zeros() as usize;
+				acc_inf += weight * bit_weights[bit];
+				bits_inf &= bits_inf - 1;
+			}
+		}
+	}
+	(acc_1, acc_inf)
+}
+
+struct FusedRoundProver<'a, P: PackedField> {
+	input_blocks: Vec<[[P::Scalar; BIT_INDEX_SIZE]; 25]>,
+	/// Word-level data for the first-round u64 specialization.
+	/// `Some` only on the first sumcheck round; consumed after the first fold.
+	input_words: Option<&'a [[u64; 25]]>,
 	bit_weights: [P::Scalar; BIT_INDEX_SIZE],
 	lane_weights: [P::Scalar; 25],
 	last_coeffs_or_eval: RoundCoeffsOrEval<P::Scalar>,
@@ -309,9 +408,9 @@ struct FusedRoundProver<P: PackedField> {
 	gruen32: Gruen32<P>,
 }
 
-impl<F: Field, P: PackedField<Scalar = F>> FusedRoundProver<P> {
+impl<'a, F: Field, P: PackedField<Scalar = F>> FusedRoundProver<'a, P> {
 	fn new(
-		input_blocks: [Vec<[F; BIT_INDEX_SIZE]>; 25],
+		input_blocks: Vec<[[F; BIT_INDEX_SIZE]; 25]>,
 		bit_weights: [F; BIT_INDEX_SIZE],
 		lane_weights: [F; 25],
 		round: usize,
@@ -319,10 +418,7 @@ impl<F: Field, P: PackedField<Scalar = F>> FusedRoundProver<P> {
 		mixed_eval: F,
 	) -> Result<Self, SumcheckError> {
 		let expected_len = 1usize << eval_point.len();
-		if input_blocks
-			.iter()
-			.any(|blocks| blocks.len() != expected_len)
-		{
+		if input_blocks.len() != expected_len {
 			return Err(SumcheckError::MultilinearSizeMismatch);
 		}
 
@@ -330,6 +426,33 @@ impl<F: Field, P: PackedField<Scalar = F>> FusedRoundProver<P> {
 
 		Ok(Self {
 			input_blocks,
+			input_words: None,
+			bit_weights,
+			lane_weights,
+			last_coeffs_or_eval: RoundCoeffsOrEval::Eval(mixed_eval),
+			round,
+			gruen32,
+		})
+	}
+
+	fn new_from_words(
+		input_words: &'a [[u64; 25]],
+		bit_weights: [F; BIT_INDEX_SIZE],
+		lane_weights: [F; 25],
+		round: usize,
+		eval_point: Vec<F>,
+		mixed_eval: F,
+	) -> Result<Self, SumcheckError> {
+		let expected_len = 1usize << eval_point.len();
+		if input_words.len() != expected_len {
+			return Err(SumcheckError::MultilinearSizeMismatch);
+		}
+
+		let gruen32 = Gruen32::new(&eval_point);
+
+		Ok(Self {
+			input_blocks: Vec::new(),
+			input_words: Some(input_words),
 			bit_weights,
 			lane_weights,
 			last_coeffs_or_eval: RoundCoeffsOrEval::Eval(mixed_eval),
@@ -339,7 +462,9 @@ impl<F: Field, P: PackedField<Scalar = F>> FusedRoundProver<P> {
 	}
 }
 
-impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for FusedRoundProver<P> {
+impl<'a, F: Field + Send + Sync, P: PackedField<Scalar = F> + Sync> SumcheckProver<F>
+	for FusedRoundProver<'a, P>
+{
 	fn n_vars(&self) -> usize {
 		self.gruen32.n_vars_remaining()
 	}
@@ -356,44 +481,61 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for FusedRoundProve
 		let n_vars_remaining = self.gruen32.n_vars_remaining();
 		let alpha = self.gruen32.next_coordinate();
 		let split = 1usize << n_vars_remaining.saturating_sub(1);
-		let eq_scalars: Vec<F> =
-			self.gruen32.eq_expansion().iter_scalars().take(split).collect();
+		let eq_chunks = self.gruen32.eq_expansion().as_ref();
 
-		let (y_1, y_inf) = eq_scalars
-			.into_par_iter()
-			.enumerate()
-			.map(|(i, eq_i)| {
-				let input_1: [_; 25] =
-					array::from_fn(|lane| self.input_blocks[lane][split + i]);
-				let pre_chi_1 = apply_linear_recipe_to_blocks(&input_1);
-
-				let input_inf: [_; 25] = array::from_fn(|lane| {
-					array::from_fn(|bit| {
-						self.input_blocks[lane][i][bit]
-							+ self.input_blocks[lane][split + i][bit]
-					})
-				});
-				let pre_chi_inf = apply_linear_recipe_to_blocks(&input_inf);
-
-				let contrib_1 = eq_i
-					* compose_chi_iota_from_low_vectors(
-						&pre_chi_1,
-						&self.lane_weights,
-						self.round,
-						&self.bit_weights,
-					);
-				let contrib_inf = eq_i
-					* compose_chi_iota_infinity_from_low_vectors(
-						&pre_chi_inf,
-						&self.lane_weights,
-						&self.bit_weights,
-					);
-				(contrib_1, contrib_inf)
-			})
-			.reduce(
-				|| (F::ZERO, F::ZERO),
-				|(a1, ai), (b1, bi)| (a1 + b1, ai + bi),
-			);
+		let (y_1, y_inf) = if let Some(ref words) = self.input_words {
+			eq_chunks
+				.par_iter()
+				.enumerate()
+				.map(|(packed_idx, eq_chunk)| {
+					let base = packed_idx << P::LOG_WIDTH;
+					let mut chunk_y_1 = F::ZERO;
+					let mut chunk_y_inf = F::ZERO;
+					for (offset, eq_i) in eq_chunk.iter().enumerate() {
+						let i = base + offset;
+						if i >= split {
+							break;
+						}
+						let (contrib_1, contrib_inf) = fused_chi_linear_word_pair_eval(
+							&words[i],
+							&words[split + i],
+							&self.lane_weights,
+							self.round,
+							&self.bit_weights,
+						);
+						chunk_y_1 += eq_i * contrib_1;
+						chunk_y_inf += eq_i * contrib_inf;
+					}
+					(chunk_y_1, chunk_y_inf)
+				})
+				.reduce(|| (F::ZERO, F::ZERO), |(a1, ai), (b1, bi)| (a1 + b1, ai + bi))
+		} else {
+			eq_chunks
+				.par_iter()
+				.enumerate()
+				.map(|(packed_idx, eq_chunk)| {
+					let base = packed_idx << P::LOG_WIDTH;
+					let mut chunk_y_1 = F::ZERO;
+					let mut chunk_y_inf = F::ZERO;
+					for (offset, eq_i) in eq_chunk.iter().enumerate() {
+						let i = base + offset;
+						if i >= split {
+							break;
+						}
+						let (contrib_1, contrib_inf) = fused_chi_linear_pair_eval_blocks(
+							&self.input_blocks[i],
+							&self.input_blocks[split + i],
+							&self.lane_weights,
+							self.round,
+							&self.bit_weights,
+						);
+						chunk_y_1 += eq_i * contrib_1;
+						chunk_y_inf += eq_i * contrib_inf;
+					}
+					(chunk_y_1, chunk_y_inf)
+				})
+				.reduce(|| (F::ZERO, F::ZERO), |(a1, ai), (b1, bi)| (a1 + b1, ai + bi))
+		};
 
 		let round_coeffs = interpolate_round_coeffs(last_eval, alpha, y_1, y_inf);
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Coeffs(round_coeffs.clone());
@@ -406,7 +548,28 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for FusedRoundProve
 			RoundCoeffsOrEval::Eval(_) => return Err(SumcheckError::ExpectedExecute),
 		};
 
-		fold_block_tables_inplace(&mut self.input_blocks, challenge);
+		if let Some(words) = self.input_words.take() {
+			let split = words.len() / 2;
+			// lo + challenge * (hi - lo), indexed by (lo_bit | hi_bit << 1)
+			let lookup = [F::ZERO, F::ONE + challenge, challenge, F::ONE];
+			self.input_blocks = (0..split)
+				.into_par_iter()
+				.map(|i| {
+					array::from_fn(|lane| {
+						let lo_word = words[i][lane];
+						let hi_word = words[split + i][lane];
+						array::from_fn(|bit| {
+							let lo_bit = (lo_word >> bit) & 1;
+							let hi_bit = (hi_word >> bit) & 1;
+							lookup[(lo_bit | (hi_bit << 1)) as usize]
+						})
+					})
+				})
+				.collect();
+		} else {
+			fold_block_tables_inplace(&mut self.input_blocks, challenge);
+		}
+
 		self.gruen32.fold(challenge);
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Eval(coeffs.evaluate(challenge));
 		Ok(())
@@ -420,18 +583,32 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for FusedRoundProve
 			});
 		}
 
-		Ok(self
-			.input_blocks
-			.into_iter()
-			.map(|blocks| {
-				std::iter::zip(&blocks[0], &self.bit_weights)
-					.fold(F::ZERO, |acc, (val, weight)| acc + *val * *weight)
-			})
-			.collect())
+		if let Some(words) = self.input_words {
+			Ok((0..25)
+				.map(|lane| {
+					let word = words[0][lane];
+					let mut acc = F::ZERO;
+					let mut bits = word;
+					while bits != 0 {
+						let bit = bits.trailing_zeros() as usize;
+						acc += self.bit_weights[bit];
+						bits &= bits - 1;
+					}
+					acc
+				})
+				.collect())
+		} else {
+			Ok((0..25)
+				.map(|lane| {
+					std::iter::zip(&self.input_blocks[0][lane], &self.bit_weights)
+						.fold(F::ZERO, |acc, (val, weight)| acc + *val * *weight)
+				})
+				.collect())
+		}
 	}
 }
 
-impl<F: Field, P: PackedField<Scalar = F>> MleCheckProver<F> for FusedRoundProver<P> {
+impl<'a, F: Field, P: PackedField<Scalar = F>> MleCheckProver<F> for FusedRoundProver<'a, P> {
 	fn eval_point(&self) -> &[F] {
 		let n = self.gruen32.n_vars_remaining();
 		&self.gruen32.eval_point()[..n]
@@ -490,12 +667,9 @@ mod tests {
 
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
-		let verifier_output = verify_round::<F, P, _>(
-			&trace.rounds[0].input,
-			&reduction,
-			&mut verifier_transcript,
-		)
-		.unwrap();
+		let verifier_output =
+			verify_round::<F, P, _>(&trace.rounds[0].input, &reduction, &mut verifier_transcript)
+				.unwrap();
 		verifier_transcript.finalize().unwrap();
 
 		assert_eq!(prover_output, verifier_output);
@@ -531,12 +705,10 @@ mod tests {
 
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), proof_bytes);
-		assert!(verify_round::<F, P, _>(
-			&trace.rounds[0].input,
-			&reduction,
-			&mut verifier_transcript,
-		)
-		.is_err());
+		assert!(
+			verify_round::<F, P, _>(&trace.rounds[0].input, &reduction, &mut verifier_transcript,)
+				.is_err()
+		);
 	}
 
 	#[test]
@@ -547,10 +719,7 @@ mod tests {
 		let input_blocks = lane_block_tables::<F, P>(&trace.rounds[0].input);
 		let pre_chi_blocks = lane_block_tables::<F, P>(&trace.rounds[0].pre_chi);
 
-		let input_single: [_; 25] = array::from_fn(|lane| input_blocks[lane][0]);
-		let computed_pre_chi = apply_linear_recipe_to_blocks(&input_single);
-		let expected_pre_chi: [_; 25] = array::from_fn(|lane| pre_chi_blocks[lane][0]);
-
-		assert_eq!(computed_pre_chi, expected_pre_chi);
+		let computed_pre_chi = apply_linear_recipe_to_blocks(&input_blocks[0]);
+		assert_eq!(computed_pre_chi, pre_chi_blocks[0]);
 	}
 }

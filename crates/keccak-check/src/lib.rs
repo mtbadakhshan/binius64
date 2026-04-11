@@ -28,12 +28,13 @@
 
 use std::{array, iter};
 
-use binius_field::{BinaryField, Field, PackedField};
+use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
 use binius_math::{FieldBuffer, multilinear::evaluate::evaluate};
 
 pub mod chi_iota;
 pub mod fused_round;
 pub mod linear_round;
+pub mod oblong_round;
 pub mod protocol;
 pub mod rotation;
 pub mod trace;
@@ -51,11 +52,16 @@ pub use linear_round::{
 	build_linear_recipe, materialize_mixed_linear_table, prove_round as prove_linear_round,
 	verify_round as verify_linear_round,
 };
+pub use oblong_round::{
+	mixed_fused_round_oblong_message_from_words, mixed_fused_round_residual_base_from_words,
+	prove_fused_round_first_message, prove_fused_round_with_oblong_message,
+	prover_message_domain as oblong_prover_message_domain, residual_extension_evals,
+	verify_fused_round_first_message, verify_fused_round_with_oblong_message,
+};
 pub use protocol::{prove, verify};
 pub use trace::{
-	CompactTrace, FullTrace, LaneTables, RoundTrace, RoundTraceWords,
-	compact_trace_from_inputs, state_batch_to_lane_tables, trace_from_inputs,
-	trace_words_from_inputs,
+	CompactTrace, FullTrace, LaneTables, RoundTrace, RoundTraceWords, compact_trace_from_inputs,
+	state_batch_to_lane_tables, trace_from_inputs, trace_words_from_inputs,
 };
 
 /// A random linear combination claim over the 25 Keccak lanes at a single point.
@@ -84,6 +90,9 @@ pub const LOG_BIT_INDEX_VARS: usize = 6;
 /// Number of bit positions in a Keccak lane.
 pub const BIT_INDEX_SIZE: usize = 1 << LOG_BIT_INDEX_VARS;
 
+/// Number of deterministic small-field batch coordinates appended at the high end of the point.
+pub const SMALL_FIELD_SUFFIX_VARS: usize = 3;
+
 /// A mixed claim where the 64 lane-bit positions have already been folded at `bit_challenge`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitIndexedMixedClaim<F> {
@@ -104,6 +113,31 @@ pub struct BitIndexedMixedClaim<F> {
 pub struct BitIndexedEndpointClaims<F> {
 	pub output_claim: BitIndexedMixedClaim<F>,
 	pub input_claim: BitIndexedMixedClaim<F>,
+}
+
+/// Experimental endpoint claims for the oblong-first-round prototype.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OblongEndpointClaims<F> {
+	pub output_claim: OblongRoundBoundaryClaim<F>,
+	pub input_claim: OblongRoundBoundaryClaim<F>,
+}
+
+/// Boundary claim for an oblong first round before the bit index has been folded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OblongRoundBoundaryClaim<F> {
+	/// Evaluation point for the batch variables.
+	pub high_point: Vec<F>,
+	/// Random verifier weights, one per lane.
+	pub lane_weights: [F; 25],
+}
+
+/// Output of the oblong first round after the verifier samples the bit challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OblongFirstRoundOutput<F> {
+	/// Sampled bit-index challenge used to fold the 64-point bit domain.
+	pub bit_challenge: F,
+	/// The resulting folded output claim consumed by the suffix prover.
+	pub output_claim: BitIndexedMixedClaim<F>,
 }
 
 /// Build a mixed lane-evaluation claim by directly evaluating explicit lane tables.
@@ -191,6 +225,25 @@ pub fn bit_indexed_lane_claim_from_words<F: BinaryField>(
 	bit_indexed_claim_from_evals(bit_challenge, high_point.to_vec(), lane_weights, lane_evals)
 }
 
+/// Build a mixed bit-indexed claim from word-level data after appending deterministic small-field
+/// coordinates at the high end of the batch point.
+pub fn bit_indexed_lane_claim_from_words_with_small_field_suffix<F>(
+	words: &[[u64; 25]],
+	bit_challenge: F,
+	high_point: &[F],
+	small_field_suffix: &[F],
+	lane_weights: [F; 25],
+) -> BitIndexedMixedClaim<F>
+where
+	F: BinaryField,
+{
+	let full_point = extend_high_point_with_small_field_suffix(high_point, small_field_suffix);
+	let bit_weights = rotation::bit_lagrange_weights(bit_challenge);
+	let low_vectors = chi_iota::evaluate_lane_low_vectors_from_words(words, &full_point);
+	let lane_evals = chi_iota::fold_low_vectors(&low_vectors, &bit_weights);
+	bit_indexed_claim_from_evals(bit_challenge, high_point.to_vec(), lane_weights, lane_evals)
+}
+
 /// Build a bit-indexed mixed claim from an existing vector of folded lane evaluations.
 pub fn bit_indexed_claim_from_evals<F: Field>(
 	bit_challenge: F,
@@ -208,6 +261,38 @@ pub fn bit_indexed_claim_from_evals<F: Field>(
 		lane_evals,
 		mixed_eval,
 	}
+}
+
+/// Return the deterministic small-field suffix challenges, embedded in the ambient challenge field.
+pub fn deterministic_small_field_suffix<F>(len: usize) -> Vec<F>
+where
+	F: From<AESTowerField8b>,
+{
+	assert!(
+		len <= SMALL_FIELD_SUFFIX_VARS,
+		"precondition: len must be at most SMALL_FIELD_SUFFIX_VARS"
+	);
+
+	[
+		AESTowerField8b::new(2),
+		AESTowerField8b::new(4),
+		AESTowerField8b::new(16),
+	][..len]
+		.iter()
+		.copied()
+		.map(F::from)
+		.collect()
+}
+
+/// Append deterministic small-field suffix coordinates to a high-point prefix.
+pub fn extend_high_point_with_small_field_suffix<F: Field>(
+	high_point: &[F],
+	small_field_suffix: &[F],
+) -> Vec<F> {
+	let mut full_point = Vec::with_capacity(high_point.len() + small_field_suffix.len());
+	full_point.extend_from_slice(high_point);
+	full_point.extend_from_slice(small_field_suffix);
+	full_point
 }
 
 /// Fold the low 6 bit-index variables of each lane table at a fixed `bit_challenge`.

@@ -66,6 +66,13 @@ pub(crate) struct LinearRecipeStatic {
 	pub(crate) lane_views: [Vec<(u32, usize)>; 25],
 	pub(crate) unique_rotations: Vec<u32>,
 	pub(crate) rotation_index: BTreeMap<u32, usize>,
+	/// Pre-filtered recipe for binary fields: only terms with odd count (coeff = 1).
+	/// Each entry is `(rv_idx, rotated_indices)` where `rotated_indices[b]` gives the
+	/// source bit index for output bit `b`.
+	pub(crate) binary_recipe: [Vec<(usize, [usize; 64])>; 25],
+	/// Word-level recipe for u64 bitwise operations: `(source_lane, rotation)` pairs
+	/// per output lane. Only terms with odd count are included.
+	pub(crate) word_recipe: [Vec<(usize, u32)>; 25],
 }
 
 pub(crate) fn linear_recipe_static() -> &'static LinearRecipeStatic {
@@ -114,7 +121,8 @@ pub(crate) fn linear_recipe_static() -> &'static LinearRecipeStatic {
 			}
 		}
 
-		let recipe_counts = recipe_maps.map(|recipe_map| recipe_map.into_iter().collect());
+		let recipe_counts: [Vec<(usize, u8)>; 25] =
+			recipe_maps.map(|recipe_map| recipe_map.into_iter().collect());
 		let mut lane_views = array::from_fn::<_, 25, _>(|_| Vec::new());
 		let mut unique_rotations = Vec::new();
 		let mut rotation_index = BTreeMap::new();
@@ -129,12 +137,37 @@ pub(crate) fn linear_recipe_static() -> &'static LinearRecipeStatic {
 			}
 		}
 
+		let binary_recipe = array::from_fn(|output_lane| {
+			recipe_counts[output_lane]
+				.iter()
+				.filter(|&&(_, count)| count % 2 == 1)
+				.map(|&(rv_idx, _)| {
+					let rot = rot_views[rv_idx].rot as usize;
+					let rotated_indices = array::from_fn(|b| (b + 64 - rot) & 63);
+					(rv_idx, rotated_indices)
+				})
+				.collect()
+		});
+
+		let word_recipe = array::from_fn(|output_lane| {
+			recipe_counts[output_lane]
+				.iter()
+				.filter(|&&(_, count)| count % 2 == 1)
+				.map(|&(rv_idx, _)| {
+					let rv = &rot_views[rv_idx];
+					(rv.lane, rv.rot)
+				})
+				.collect()
+		});
+
 		LinearRecipeStatic {
 			rot_views,
 			recipe_counts,
 			lane_views,
 			unique_rotations,
 			rotation_index,
+			binary_recipe,
+			word_recipe,
 		}
 	})
 }
@@ -302,6 +335,7 @@ fn add_recipe_count(
 		.or_insert(1);
 }
 
+#[inline]
 pub(crate) fn coeff_from_count<F: Field>(count: u8) -> F {
 	(0..count).fold(F::ZERO, |acc, _| acc + F::ONE)
 }

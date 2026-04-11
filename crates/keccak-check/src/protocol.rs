@@ -6,8 +6,7 @@ use binius_ip_prover::channel::IPProverChannel;
 
 use crate::{
 	BitIndexedEndpointClaims, Error, FusedRoundReduction, bit_indexed_claim_from_evals,
-	bit_indexed_lane_claim_from_words, fused_round,
-	trace::CompactTrace,
+	bit_indexed_lane_claim_from_words, fused_round, trace::CompactTrace,
 };
 
 /// Prove the full standalone 24-round KeccakCheck over a compact word-level trace.

@@ -8,8 +8,7 @@ use binius_examples::{StdProver, StdVerifier, setup_sha256};
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_frontend::{Circuit, CircuitBuilder};
 use binius_keccak_check::{
-	CompactTrace, prove as prove_protocol, compact_trace_from_inputs,
-	verify as verify_protocol,
+	CompactTrace, compact_trace_from_inputs, prove as prove_protocol, verify as verify_protocol,
 };
 use binius_transcript::{
 	ProverTranscript as ProtocolProverTranscript, VerifierTranscript as ProtocolVerifierTranscript,
