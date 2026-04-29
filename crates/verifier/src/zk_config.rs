@@ -31,7 +31,7 @@ use binius_spartan_verifier::{
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
-use digest::{Digest, Output, core_api::BlockSizeUser};
+use digest::{Digest, Output, block_api::BlockSizeUser};
 
 use crate::{
 	config::LOG_WORDS_PER_ELEM,
@@ -95,10 +95,13 @@ where
 		let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
 		let outer_iop_verifier = IronSpartanIOPVerifier::new(outer_cs);
 
-		// Combine inner and outer oracle specs.
+		// Transcript layout: outer precommit oracle first (committed at wrapper construction),
+		// then all inner oracles, then the remaining outer oracles (private, mask).
+		let outer_oracle_specs = outer_iop_verifier.oracle_specs();
 		let oracle_specs: Vec<OracleSpec> = [
+			vec![outer_oracle_specs[0]],
 			inner_iop_verifier.oracle_specs(),
-			outer_iop_verifier.oracle_specs(),
+			outer_oracle_specs[1..].to_vec(),
 		]
 		.concat();
 
@@ -154,7 +157,7 @@ where
 	) -> Result<(), Error> {
 		// Create BaseFoldZK channel and wrap with outer verifier.
 		let channel = self.basefold_compiler.create_channel(transcript);
-		let mut wrapped_channel = ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier);
+		let mut wrapped_channel = ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier)?;
 
 		// Run the inner IOP verification through the wrapped channel.
 		self.inner_iop_verifier

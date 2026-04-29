@@ -24,17 +24,16 @@ use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
 	IOPVerifier, Verifier,
-	and_reduction::verifier::AndCheckOutput,
 	config::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
-	protocols::{intmul::IntMulOutput, sumcheck::SumcheckOutput},
+	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
-use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
+use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 
 use super::error::Error;
 use crate::{
-	and_reduction::{prover::OblongZerocheckProver, utils::multivariate::OneBitOblongMultilinear},
+	and_reduction::prover::OblongZerocheckProver,
 	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
 	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::{
@@ -260,7 +259,12 @@ impl IOPProver {
 			compute_batched_transparent(rs_eq_ind, pubcheck_point, batch_coeff);
 
 		// Prove oracle relations via channel (runs BaseFold internally)
-		channel.prove_oracle_relations([(trace_oracle, batched_transparent, batched_claim)]);
+		channel.prove_oracle_relations([(
+			trace_oracle,
+			witness_packed,
+			batched_transparent,
+			batched_claim,
+		)]);
 
 		drop(pcs_guard);
 
@@ -443,39 +447,22 @@ where
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
-	let AndCheckWitness {
-		mut a,
-		mut b,
-		mut c,
-	} = witness;
+	let AndCheckWitness { a, b, c } = witness;
 
 	let log_constraint_count = checked_log_2(a.len());
 
-	// The structure of the AND reduction requires that it proves at least 2^3 word-level
-	// constraints, you can zero-pad if necessary to reach this minimum
-	assert!(log_constraint_count >= checked_log_2(binius_core::consts::MIN_AND_CONSTRAINTS));
+	let mut small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.to_vec();
+	small_field_zerocheck_challenges.truncate(log_constraint_count);
 
-	let big_field_zerocheck_challenges = channel.sample_many(log_constraint_count - 3);
-
-	a.resize(1 << log_constraint_count, Word(0));
-	b.resize(1 << log_constraint_count, Word(0));
-	c.resize(1 << log_constraint_count, Word(0));
+	let big_field_zerocheck_challenges =
+		channel.sample_many(log_constraint_count - small_field_zerocheck_challenges.len());
 
 	let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b>::new(
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: a,
-		},
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: b,
-		},
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: c,
-		},
-		big_field_zerocheck_challenges.to_vec(),
-		PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.to_vec(),
+		a,
+		b,
+		c,
+		big_field_zerocheck_challenges,
+		small_field_zerocheck_challenges,
 		prover_message_domain.isomorphic(),
 	);
 

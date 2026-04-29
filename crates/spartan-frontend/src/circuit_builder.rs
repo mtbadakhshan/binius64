@@ -7,7 +7,8 @@ use bytemuck::zeroed_vec;
 use smallvec::{SmallVec, smallvec};
 
 use crate::constraint_system::{
-	ConstraintSystem, ConstraintWire, MulConstraint, Operand, WireKind, WitnessIndex, WitnessLayout,
+	ConstraintSystem, ConstraintWire, MulConstraint, Operand, WireKind, Witness, WitnessIndex,
+	WitnessLayout, WitnessSegment,
 };
 
 /// Common interface for circuit construction and witness generation.
@@ -90,6 +91,7 @@ pub enum WireStatus {
 pub struct ConstraintSystemIR<F: Field> {
 	pub(crate) constant_alloc: WireAllocator,
 	pub(crate) public_alloc: WireAllocator,
+	pub(crate) precommit_alloc: WireAllocator,
 	pub(crate) private_alloc: WireAllocator,
 	pub(crate) constants: HashMap<F, u32>,
 	pub(crate) zero_constraints: Vec<Operand<ConstraintWire>>,
@@ -144,8 +146,12 @@ impl<F: Field> ConstraintSystemIR<F> {
 			.collect();
 
 		// Create WitnessLayout
-		let layout =
-			WitnessLayout::sparse(constants.clone(), self.public_alloc.n_wires, &private_alive);
+		let layout = WitnessLayout::sparse(
+			constants.clone(),
+			self.public_alloc.n_wires,
+			self.precommit_alloc.n_wires,
+			&private_alive,
+		);
 
 		// Map all ConstraintWire to WitnessIndex
 		let map_operand = |operand: &Operand<ConstraintWire>| -> Operand<WitnessIndex> {
@@ -170,11 +176,13 @@ impl<F: Field> ConstraintSystemIR<F> {
 		// Map one_wire to WitnessIndex
 		let one_wire_index = layout
 			.get(&one_wire)
-			.expect("one_wire constant should exist in layout");
+			.expect("one_wire constant should exist in layout")
+			.index;
 
 		let cs = ConstraintSystem::new(
 			constants,
 			layout.n_inout() as u32,
+			layout.n_precommit() as u32,
 			layout.n_private() as u32,
 			layout.log_public(),
 			mul_constraints,
@@ -201,6 +209,7 @@ impl<F: Field> ConstraintBuilder<F> {
 			ir: ConstraintSystemIR {
 				constant_alloc: WireAllocator::new(WireKind::Constant),
 				public_alloc: WireAllocator::new(WireKind::InOut),
+				precommit_alloc: WireAllocator::new(WireKind::Precommit),
 				private_alloc: WireAllocator::new(WireKind::Private),
 				constants: HashMap::new(),
 				zero_constraints: Vec::new(),
@@ -212,6 +221,10 @@ impl<F: Field> ConstraintBuilder<F> {
 
 	pub fn alloc_inout(&mut self) -> ConstraintWire {
 		self.ir.public_alloc.alloc()
+	}
+
+	pub fn alloc_precommit(&mut self) -> ConstraintWire {
+		self.ir.precommit_alloc.alloc()
 	}
 
 	pub fn build(self) -> ConstraintSystemIR<F> {
@@ -301,21 +314,26 @@ impl<F: Field> WitnessWire<F> {
 #[derive(Debug)]
 pub struct WitnessGenerator<'a, F: Field> {
 	alloc: WireAllocator,
-	witness: Vec<F>,
+	public: Vec<F>,
+	precommit: Vec<F>,
+	private: Vec<F>,
 	layout: &'a WitnessLayout<F>,
 	first_error: Option<Backtrace>,
 }
 
 impl<'a, F: Field> WitnessGenerator<'a, F> {
 	pub fn new(layout: &'a WitnessLayout<F>) -> Self {
-		let witness_size = layout.size();
+		let mut public = zeroed_vec(layout.public_size());
+		public[..layout.constants.len()].copy_from_slice(&layout.constants);
 
-		let mut witness = zeroed_vec(witness_size);
-		witness[..layout.constants.len()].copy_from_slice(&layout.constants);
+		let precommit = zeroed_vec(layout.precommit_size());
+		let private = zeroed_vec(layout.private_size());
 
 		Self {
 			alloc: WireAllocator::new(WireKind::Private),
-			witness,
+			public,
+			precommit,
+			private,
 			layout,
 			first_error: None,
 		}
@@ -328,7 +346,11 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 
 	fn write_value(&mut self, wire: ConstraintWire, value: F) -> WitnessWire<F> {
 		if let Some(index) = self.layout.get(&wire) {
-			self.witness[index.0 as usize] = value;
+			match index.segment {
+				WitnessSegment::Public => self.public[index.index as usize] = value,
+				WitnessSegment::Precommit => self.precommit[index.index as usize] = value,
+				WitnessSegment::Private => self.private[index.index as usize] = value,
+			}
 		}
 		WitnessWire(value)
 	}
@@ -338,11 +360,16 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 		self.write_value(wire, value)
 	}
 
-	pub fn build(self) -> Result<Vec<F>, WitnessError> {
+	pub fn write_precommit(&mut self, wire: ConstraintWire, value: F) -> WitnessWire<F> {
+		assert_eq!(wire.kind, WireKind::Precommit);
+		self.write_value(wire, value)
+	}
+
+	pub fn build(self) -> Result<Witness<F>, WitnessError> {
 		if let Some(backtrace) = self.first_error {
 			Err(WitnessError { backtrace })
 		} else {
-			Ok(self.witness)
+			Ok(Witness::new(self.public, self.precommit, self.private))
 		}
 	}
 
@@ -437,6 +464,28 @@ mod tests {
 		let x0 = witness_generator.write_inout(x0, B128::ONE);
 		let x1 = witness_generator.write_inout(x1, B128::MULTIPLICATIVE_GENERATOR);
 		let xn = witness_generator.write_inout(xn, B128::MULTIPLICATIVE_GENERATOR.pow(6765));
+		let out = fibonacci(&mut witness_generator, x0, x1, 20);
+		witness_generator.assert_eq(out, xn);
+		let witness = witness_generator.build().unwrap();
+
+		constraint_system.validate(&witness);
+	}
+
+	#[test]
+	fn test_fibonacci_with_precommit() {
+		let mut constraint_builder = ConstraintBuilder::new();
+		let x0 = constraint_builder.alloc_inout();
+		let x1 = constraint_builder.alloc_inout();
+		let xn = constraint_builder.alloc_precommit();
+		let out = fibonacci(&mut constraint_builder, x0, x1, 20);
+		constraint_builder.assert_eq(out, xn);
+		let ir = constraint_builder.build();
+		let (constraint_system, layout) = ir.finalize();
+
+		let mut witness_generator = WitnessGenerator::new(&layout);
+		let x0 = witness_generator.write_inout(x0, B128::ONE);
+		let x1 = witness_generator.write_inout(x1, B128::MULTIPLICATIVE_GENERATOR);
+		let xn = witness_generator.write_precommit(xn, B128::MULTIPLICATIVE_GENERATOR.pow(6765));
 		let out = fibonacci(&mut witness_generator, x0, x1, 20);
 		witness_generator.assert_eq(out, xn);
 		let witness = witness_generator.build().unwrap();

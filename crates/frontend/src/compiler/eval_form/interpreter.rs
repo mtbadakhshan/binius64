@@ -140,12 +140,13 @@ impl<'a> Interpreter<'a> {
 				0x31 => self.exec_smul(ctx),
 
 				// 32-bit operations
-				0x40 => self.exec_iadd_cout32(ctx),
+				0x40 => self.exec_iadd32_cin_cout(ctx),
 				0x41 => self.exec_rotr32(ctx),
 				0x42 => self.exec_srl32(ctx),
 				0x43 => self.exec_rotr(ctx),
 				0x44 => self.exec_sll32(ctx),
 				0x45 => self.exec_sra32(ctx),
+				0x46 => self.exec_iadd32_cout(ctx),
 
 				// Masks
 				0x50 => self.exec_mask_low(ctx),
@@ -315,7 +316,20 @@ impl<'a> Interpreter<'a> {
 	}
 
 	// 32-bit operations
-	fn exec_iadd_cout32(&mut self, ctx: &mut ExecutionContext<'_>) {
+	fn exec_iadd32_cin_cout(&mut self, ctx: &mut ExecutionContext<'_>) {
+		let dst_sum = self.read_reg();
+		let dst_cout = self.read_reg();
+		let src1 = self.read_reg();
+		let src2 = self.read_reg();
+		let cin = self.read_reg();
+		let (sum, cout) = self
+			.load(ctx, src1)
+			.iadd32_cin_cout(self.load(ctx, src2), self.load(ctx, cin));
+		self.store(ctx, dst_sum, sum);
+		self.store(ctx, dst_cout, cout);
+	}
+
+	fn exec_iadd32_cout(&mut self, ctx: &mut ExecutionContext<'_>) {
 		let dst_sum = self.read_reg();
 		let dst_cout = self.read_reg();
 		let src1 = self.read_reg();
@@ -479,7 +493,7 @@ impl<'a> Interpreter<'a> {
 
 	// Hint execution
 	fn exec_hint(&mut self, ctx: &mut ExecutionContext<'_>) {
-		let hint_id = self.read_u32() as usize;
+		let hint_id = self.read_u32();
 
 		// Read dimensions
 		let n_dimensions = self.read_u16() as usize;

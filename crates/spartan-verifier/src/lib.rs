@@ -33,6 +33,8 @@ pub mod constraint_system;
 pub mod wiring;
 pub mod wrapper;
 
+use std::slice;
+
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::PseudoCompressionFunction;
 use binius_iop::{
@@ -43,13 +45,16 @@ use binius_iop::{
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
-use binius_math::multilinear::evaluate::evaluate_inplace_scalars;
-use binius_spartan_frontend::constraint_system::ConstraintSystem;
+use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
+use binius_spartan_frontend::constraint_system::{ConstraintSystem, WitnessSegment};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
-use digest::{Digest, Output, core_api::BlockSizeUser};
+use digest::{Digest, Output, block_api::BlockSizeUser};
 
-use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};
+use crate::{
+	constraint_system::{BlindingInfo, ConstraintSystemPadded},
+	wiring::evaluate_wiring_mle_public,
+};
 
 pub const SECURITY_BITS: usize = 96;
 
@@ -110,13 +115,15 @@ impl<F: Field> IOPVerifier<F> {
 	/// These describe the oracles (witness and mask) that the prover commits to.
 	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
 		let cs = &self.constraint_system;
-		let log_witness_size = cs.log_size() as usize;
 		let (m_n, m_d) = cs.mask_dims();
 		let log_mask_dim = m_n + m_d;
 
 		vec![
 			OracleSpec {
-				log_msg_len: log_witness_size,
+				log_msg_len: cs.log_precommit() as usize,
+			},
+			OracleSpec {
+				log_msg_len: cs.log_private() as usize,
 			},
 			OracleSpec {
 				log_msg_len: log_mask_dim,
@@ -131,6 +138,8 @@ impl<F: Field> IOPVerifier<F> {
 	///
 	/// # Arguments
 	///
+	/// * `precommit_oracle` - Handle to the precommit oracle, received from the channel by the
+	///   caller before invoking `verify`.
 	/// * `public` - The public inputs to the constraint system
 	/// * `channel` - The IOP verifier channel
 	///
@@ -139,6 +148,7 @@ impl<F: Field> IOPVerifier<F> {
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
 	pub fn verify<Channel>(
 		&self,
+		precommit_oracle: Channel::Oracle,
 		public: Vec<Channel::Elem>,
 		channel: &mut Channel,
 	) -> Result<(), Error>
@@ -160,10 +170,8 @@ impl<F: Field> IOPVerifier<F> {
 			});
 		}
 
-		// Receive the trace oracle commitment.
-		let trace_oracle = channel.recv_oracle()?;
-
-		// Receive the mask oracle commitment.
+		// Receive the private and mask oracle commitments.
+		let private_oracle = channel.recv_oracle()?;
 		let mask_oracle = channel.recv_oracle()?;
 
 		// Verify the multiplication constraints.
@@ -175,34 +183,65 @@ impl<F: Field> IOPVerifier<F> {
 			r_x,
 		} = verify_mulcheck(cs, channel)?;
 
-		// Sample the public input check challenge and evaluate the public input at the challenge
-		// point.
-		let r_public = channel.sample_many(cs.log_public() as usize);
+		// λ is the batching challenge for the constraint operands
+		let lambda = channel.sample();
 
-		let public_eval = evaluate_inplace_scalars(public, &r_public);
+		// Batch together the constraint operand evaluation claims.
+		let batched_sum = evaluate_univariate(&[a_eval, b_eval, c_eval], lambda.clone());
 
-		// Compute wiring claim components
-		let wiring_claim =
-			wiring::compute_claim(cs, &r_public, &[a_eval, b_eval, c_eval], public_eval, channel);
+		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x
+		let r_x_tensor = eq_ind_partial_eval_scalars(&r_x);
 
-		// Build the transparent closure for the wiring oracle relation
-		let trace_transparent = wiring::eval_transparent(
-			cs,
-			&r_public,
-			&r_x,
-			wiring_claim.lambda,
-			wiring_claim.batch_coeff,
-		);
+		// The public-segment contribution to the operand evaluations is purely a function of
+		// public-channel inputs (the public scalars, λ, and rₓ). Trade in those Elems for plain
+		// field values, run the MLE evaluation in plaintext, and materialize the result as a
+		// single inout wire instead of building the entire sub-circuit.
+		let public_eval = {
+			let public_len = public.len();
+			let inputs = [
+				public.as_slice(),
+				slice::from_ref(&lambda),
+				r_x_tensor.as_ref(),
+			]
+			.concat();
 
-		// Build the transparent closure for the mask oracle relation
+			let mul_constraints = cs.mul_constraints();
+			channel.compute_public_value(&inputs, move |vals| {
+				let public_vals = &vals[..public_len];
+				let lambda_val = vals[public_len];
+				let r_x_tensor_vals = &vals[public_len + 1..];
+				evaluate_wiring_mle_public(
+					mul_constraints,
+					public_vals,
+					lambda_val,
+					r_x_tensor_vals,
+				)
+			})
+		};
+
+		// Prover sends the precommit segment's contribution to the operand evaluations.
+		let precommit_claim = channel.recv_one()?;
+
+		let private_claim = batched_sum - public_eval - precommit_claim.clone();
+
+		// Build transparent closures for each oracle relation
+		let precommit_transparent =
+			wiring::eval_transparent(cs, WitnessSegment::Precommit, &r_x_tensor, lambda.clone());
+		let private_transparent =
+			wiring::eval_transparent(cs, WitnessSegment::Private, &r_x_tensor, lambda);
 		let mask_transparent = mask_transparent(cs, &r_x);
 
-		// Verify both oracle relations (checks are done inside verify_oracle_relations)
+		// Verify all oracle relations
 		channel.verify_oracle_relations([
 			OracleLinearRelation {
-				oracle: trace_oracle,
-				transparent: trace_transparent,
-				claim: wiring_claim.batched_sum,
+				oracle: precommit_oracle,
+				transparent: precommit_transparent,
+				claim: precommit_claim,
+			},
+			OracleLinearRelation {
+				oracle: private_oracle,
+				transparent: private_transparent,
+				claim: private_claim,
 			},
 			OracleLinearRelation {
 				oracle: mask_oracle,
@@ -293,9 +332,11 @@ where
 		// Verifier observes the public input (includes it in Fiat-Shamir).
 		transcript.observe().write_slice(public);
 
-		// Create channel and delegate to IOPVerifier::verify
+		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify.
 		let mut channel = self.basefold_compiler.create_channel(transcript);
-		self.iop_verifier.verify(public.to_vec(), &mut channel)
+		let precommit_oracle = channel.recv_oracle()?;
+		self.iop_verifier
+			.verify(precommit_oracle, public.to_vec(), &mut channel)
 	}
 }
 
@@ -362,8 +403,6 @@ pub enum Error {
 	Sumcheck(#[from] sumcheck::Error),
 	#[error("BaseFold error: {0}")]
 	BaseFold(#[from] basefold::Error),
-	#[error("wiring error: {0}")]
-	Wiring(#[from] wiring::Error),
 	#[error("Transcript error: {0}")]
 	Transcript(#[from] binius_transcript::Error),
 	#[error("IOP channel error: {0}")]

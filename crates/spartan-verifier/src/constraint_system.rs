@@ -5,7 +5,7 @@ use binius_field::Field;
 use binius_ip::mlecheck::mask_buffer_dimensions;
 pub use binius_spartan_frontend::constraint_system::BlindingInfo;
 use binius_spartan_frontend::constraint_system::{
-	ConstraintSystem, MulConstraint, Operand, WitnessIndex,
+	ConstraintSystem, MulConstraint, Operand, Witness, WitnessIndex,
 };
 use binius_utils::checked_arithmetics::{checked_log_2, log2_ceil_usize};
 
@@ -17,7 +17,8 @@ use binius_utils::checked_arithmetics::{checked_log_2, log2_ceil_usize};
 #[derive(Debug, Clone)]
 pub struct ConstraintSystemPadded<F: Field> {
 	inner: ConstraintSystem<F>,
-	log_size: u32,
+	log_precommit: u32,
+	log_private: u32,
 	blinding_info: BlindingInfo,
 	mul_constraints: Vec<MulConstraint<WitnessIndex>>,
 	/// Mask buffer dimensions (m_n, m_d) for the ZK mulcheck mask polynomial.
@@ -35,29 +36,45 @@ impl<F: Field> ConstraintSystemPadded<F> {
 	pub fn new(cs: ConstraintSystem<F>, blinding_info: BlindingInfo) -> Self {
 		let mut mul_constraints = cs.mul_constraints().to_vec();
 
-		// Calculate witness size and log_size
-		let n_public = cs.n_public() as usize;
-		let n_private = cs.n_private() as usize;
-		let total_witness_size = n_public
-			+ n_private
-			+ blinding_info.n_dummy_wires
-			+ 3 * blinding_info.n_dummy_constraints;
-		let log_size = log2_ceil_usize(total_witness_size) as u32;
+		/// Adds dummy blinding constraints for a segment and returns its padded log-size.
+		fn add_blinding_constraints(
+			mul_constraints: &mut Vec<MulConstraint<WitnessIndex>>,
+			make_index: fn(u32) -> WitnessIndex,
+			n_circuit_wires: usize,
+			n_dummy_wires: usize,
+			n_dummy_constraints: usize,
+		) -> u32 {
+			let dummy_base = n_circuit_wires + n_dummy_wires;
+			for i in 0..n_dummy_constraints {
+				let a = make_index((dummy_base + 3 * i) as u32);
+				let b = make_index((dummy_base + 3 * i + 1) as u32);
+				let c = make_index((dummy_base + 3 * i + 2) as u32);
+				mul_constraints.push(MulConstraint {
+					a: Operand::from(a),
+					b: Operand::from(b),
+					c: Operand::from(c),
+				});
+			}
 
-		// Add dummy constraints for blinding
-		// Each dummy constraint uses 3 consecutive wires starting after n_dummy_wires
-		let dummy_constraint_wire_base = n_public + n_private + blinding_info.n_dummy_wires;
-		for i in 0..blinding_info.n_dummy_constraints {
-			let a = WitnessIndex((dummy_constraint_wire_base + 3 * i) as u32);
-			let b = WitnessIndex((dummy_constraint_wire_base + 3 * i + 1) as u32);
-			let c = WitnessIndex((dummy_constraint_wire_base + 3 * i + 2) as u32);
-
-			mul_constraints.push(MulConstraint {
-				a: Operand::from(a),
-				b: Operand::from(b),
-				c: Operand::from(c),
-			});
+			let blinding_size = n_dummy_wires + 3 * n_dummy_constraints;
+			log2_ceil_usize(n_circuit_wires + blinding_size) as u32
 		}
+
+		let log_precommit = add_blinding_constraints(
+			&mut mul_constraints,
+			WitnessIndex::precommit,
+			cs.n_precommit() as usize,
+			blinding_info.n_dummy_wires,
+			// Precommit segment doesn't need dummy constraints, only the private segment does.
+			0,
+		);
+		let log_private = add_blinding_constraints(
+			&mut mul_constraints,
+			WitnessIndex::private,
+			cs.n_private() as usize,
+			blinding_info.n_dummy_wires,
+			blinding_info.n_dummy_constraints,
+		);
 
 		// Pad to next power of two with `one * one = one` constraints
 		let one_operand = Operand::from(cs.one_wire());
@@ -79,7 +96,8 @@ impl<F: Field> ConstraintSystemPadded<F> {
 
 		Self {
 			inner: cs,
-			log_size,
+			log_precommit,
+			log_private,
 			blinding_info,
 			mul_constraints,
 			mask_dims,
@@ -92,6 +110,10 @@ impl<F: Field> ConstraintSystemPadded<F> {
 
 	pub fn n_inout(&self) -> u32 {
 		self.inner.n_inout()
+	}
+
+	pub fn n_precommit(&self) -> u32 {
+		self.inner.n_precommit()
 	}
 
 	pub fn n_private(&self) -> u32 {
@@ -110,12 +132,20 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		self.inner.one_wire()
 	}
 
-	pub fn log_size(&self) -> u32 {
-		self.log_size
+	pub fn log_precommit(&self) -> u32 {
+		self.log_precommit
 	}
 
-	pub fn size(&self) -> usize {
-		1 << self.log_size as usize
+	pub fn precommit_size(&self) -> usize {
+		1 << self.log_precommit as usize
+	}
+
+	pub fn log_private(&self) -> u32 {
+		self.log_private
+	}
+
+	pub fn private_size(&self) -> usize {
+		1 << self.log_private as usize
 	}
 
 	pub fn blinding_info(&self) -> &BlindingInfo {
@@ -131,15 +161,12 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		self.mask_dims
 	}
 
-	pub fn validate(&self, witness: &[F]) {
-		assert_eq!(witness.len(), self.size());
+	pub fn validate(&self, witness: &Witness<F>) {
+		assert_eq!(witness.public().len(), 1 << self.log_public() as usize);
+		assert_eq!(witness.private().len(), self.private_size());
 
 		let operand_val = |operand: &Operand<WitnessIndex>| {
-			operand
-				.wires()
-				.iter()
-				.map(|idx| witness[idx.0 as usize])
-				.sum::<F>()
+			operand.wires().iter().map(|&idx| witness[idx]).sum::<F>()
 		};
 
 		for MulConstraint { a, b, c } in &self.mul_constraints {
