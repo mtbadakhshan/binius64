@@ -33,8 +33,10 @@ use binius_math::{FieldBuffer, multilinear::evaluate::evaluate};
 
 pub mod chi_iota;
 pub mod fused_round;
+pub mod grouped_round;
 pub mod linear_round;
 pub mod oblong_round;
+pub mod parallel_groups;
 pub mod protocol;
 pub mod rotation;
 pub mod trace;
@@ -58,7 +60,12 @@ pub use oblong_round::{
 	prover_message_domain as oblong_prover_message_domain, residual_extension_evals,
 	verify_fused_round_first_message, verify_fused_round_with_oblong_message,
 };
-pub use protocol::{prove, verify};
+pub use grouped_round::{
+	GroupedRoundOutput, GroupedRoundReduction, prove_group_from_words,
+	verify_group_from_words,
+};
+pub use parallel_groups::{prove_parallel, verify_parallel};
+pub use protocol::{prove, prove_grouped, verify, verify_grouped};
 pub use trace::{
 	CompactTrace, FullTrace, LaneTables, RoundTrace, RoundTraceWords, compact_trace_from_inputs,
 	state_batch_to_lane_tables, trace_from_inputs, trace_words_from_inputs,

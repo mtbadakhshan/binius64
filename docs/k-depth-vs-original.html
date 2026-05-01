@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Three Keccak GKR Approaches: k=1, k-flat, k-parallel</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f5f5f5; padding: 20px; color: #333; }
+  h1 { text-align: center; margin-bottom: 4px; font-size: 1.4em; }
+  h2 { font-size: 1.1em; margin: 20px 0 8px; border-bottom: 2px solid #ddd; padding-bottom: 4px; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 24px; font-size: 0.85em; line-height:1.5; }
+  .container { max-width: 1600px; margin: 0 auto; }
+  .panel { background: #fff; border-radius: 12px; padding: 20px; margin: 16px 0; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  @media (max-width: 1100px) { .three-col { grid-template-columns: 1fr; } }
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+  table.cost { width:100%; border-collapse:collapse; font-size:0.78em; margin:10px 0; }
+  table.cost th, table.cost td { padding:5px 8px; border:1px solid #ddd; text-align:center; }
+  table.cost th { background:#f0f0f0; font-weight:700; }
+  .note { font-size: 0.78em; color: #777; margin-top: 8px; line-height: 1.5; font-style: italic; }
+  code { font-family: 'Menlo', 'Consolas', monospace; font-size: 0.85em; background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+  .type-sig { font-family: 'Menlo', 'Consolas', monospace; font-size: 0.72em; background: #e8eaf6; padding: 4px 8px; border-radius: 4px; display: block; margin: 6px 0; line-height: 1.6; color: #283593; }
+</style>
+</head>
+<body>
+<h1>Three Keccak GKR Approaches</h1>
+<p class="subtitle">
+  k=1 (standard), k-flat (sequential grouped), k-parallel (lockstep batched)<br>
+  All illustrated with k=4. Each round is a <strong>fused chi+iota+theta+rho+pi</strong> transition.
+</p>
+
+<div class="container">
+
+<!-- ==================== CIRCUIT OVERVIEW (k=4) ==================== -->
+<div class="panel">
+  <h2>Round &amp; Sumcheck Structure (k=4, n_groups=6)</h2>
+  <div class="three-col">
+
+  <!-- k=1 circuit -->
+  <div>
+    <p style="font-size:0.8em; font-weight:700; color:#c62828; margin-bottom:6px;">k=1: 24 sequential sumchecks</p>
+    <svg viewBox="0 0 260 520" style="width:100%;">
+      <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#999"/></marker></defs>
+      <rect x="90" y="2" width="80" height="18" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+      <text x="130" y="14" text-anchor="middle" font-size="7" fill="#0d47a1" font-weight="700">S_24</text>
+      <!-- 24 individual sumcheck boxes -->
+      <g>
+        <rect x="10" y="28" width="240" height="24" rx="4" fill="#ffebee" stroke="#c62828" stroke-width="1"/>
+        <rect x="20" y="32" width="52" height="16" rx="2" fill="#fff" stroke="#c62828" stroke-width="0.7"/>
+        <text x="46" y="43" text-anchor="middle" font-size="6" fill="#c62828">R23</text>
+        <text x="130" y="44" text-anchor="middle" font-size="6.5" fill="#c62828">SC #24</text>
+      </g>
+      <line x1="130" y1="52" x2="130" y2="58" stroke="#999" stroke-width="0.7" marker-end="url(#a1)"/>
+      <g>
+        <rect x="10" y="60" width="240" height="24" rx="4" fill="#ffebee" stroke="#c62828" stroke-width="1"/>
+        <rect x="20" y="64" width="52" height="16" rx="2" fill="#fff" stroke="#c62828" stroke-width="0.7"/>
+        <text x="46" y="75" text-anchor="middle" font-size="6" fill="#c62828">R22</text>
+        <text x="130" y="76" text-anchor="middle" font-size="6.5" fill="#c62828">SC #23</text>
+      </g>
+      <line x1="130" y1="84" x2="130" y2="90" stroke="#999" stroke-width="0.7" marker-end="url(#a1)"/>
+      <g>
+        <rect x="10" y="92" width="240" height="24" rx="4" fill="#ffebee" stroke="#c62828" stroke-width="1"/>
+        <rect x="20" y="96" width="52" height="16" rx="2" fill="#fff" stroke="#c62828" stroke-width="0.7"/>
+        <text x="46" y="107" text-anchor="middle" font-size="6" fill="#c62828">R21</text>
+        <text x="130" y="108" text-anchor="middle" font-size="6.5" fill="#c62828">SC #22</text>
+      </g>
+      <text x="130" y="140" text-anchor="middle" font-size="12" fill="#bbb">...</text>
+      <text x="130" y="155" text-anchor="middle" font-size="6.5" fill="#888">20 more sumchecks</text>
+      <text x="130" y="170" text-anchor="middle" font-size="12" fill="#bbb">...</text>
+      <g>
+        <rect x="10" y="182" width="240" height="24" rx="4" fill="#ffebee" stroke="#c62828" stroke-width="1"/>
+        <rect x="20" y="186" width="52" height="16" rx="2" fill="#fff" stroke="#c62828" stroke-width="0.7"/>
+        <text x="46" y="197" text-anchor="middle" font-size="6" fill="#c62828">R1</text>
+        <text x="130" y="198" text-anchor="middle" font-size="6.5" fill="#c62828">SC #2</text>
+      </g>
+      <line x1="130" y1="206" x2="130" y2="212" stroke="#999" stroke-width="0.7" marker-end="url(#a1)"/>
+      <g>
+        <rect x="10" y="214" width="240" height="24" rx="4" fill="#ffebee" stroke="#c62828" stroke-width="1"/>
+        <rect x="20" y="218" width="52" height="16" rx="2" fill="#fff" stroke="#c62828" stroke-width="0.7"/>
+        <text x="46" y="229" text-anchor="middle" font-size="6" fill="#c62828">R0</text>
+        <text x="130" y="230" text-anchor="middle" font-size="6.5" fill="#c62828">SC #1</text>
+      </g>
+      <line x1="130" y1="238" x2="130" y2="244" stroke="#999" stroke-width="0.7" marker-end="url(#a1)"/>
+      <rect x="90" y="248" width="80" height="18" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+      <text x="130" y="260" text-anchor="middle" font-size="7" fill="#1b5e20" font-weight="700">S_0</text>
+      <!-- Summary -->
+      <text x="130" y="286" text-anchor="middle" font-size="7.5" fill="#c62828" font-weight="700">24 sumchecks, 24 rounds</text>
+      <text x="130" y="298" text-anchor="middle" font-size="7" fill="#555">1 round per sumcheck</text>
+      <text x="130" y="310" text-anchor="middle" font-size="7" fill="#555">FS depth: 24 x log(h)</text>
+    </svg>
+  </div>
+
+  <!-- k-flat (k=4) circuit -->
+  <div>
+    <p style="font-size:0.8em; font-weight:700; color:#e65100; margin-bottom:6px;">k-flat (k=4): 6 sequential sumchecks</p>
+    <svg viewBox="0 0 260 520" style="width:100%;">
+      <rect x="90" y="2" width="80" height="18" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+      <text x="130" y="14" text-anchor="middle" font-size="7" fill="#0d47a1" font-weight="700">S_24</text>
+      <!-- Group 5: R20-R23 -->
+      <g>
+        <rect x="10" y="28" width="240" height="58" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+        <text x="240" y="40" text-anchor="end" font-size="6" fill="#e65100">SC #6</text>
+        <rect x="20" y="38" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="44" y="48" text-anchor="middle" font-size="5.5" fill="#e65100">R23</text>
+        <line x1="68" y1="45" x2="76" y2="45" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="78" y="38" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="102" y="48" text-anchor="middle" font-size="5.5" fill="#e65100">R22</text>
+        <line x1="126" y1="45" x2="134" y2="45" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="136" y="38" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="160" y="48" text-anchor="middle" font-size="5.5" fill="#e65100">R21</text>
+        <line x1="184" y1="45" x2="192" y2="45" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="194" y="38" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="218" y="48" text-anchor="middle" font-size="5.5" fill="#e65100">R20</text>
+        <text x="130" y="76" text-anchor="middle" font-size="5.5" fill="#c62828">zerocheck: tw[0..2]</text>
+      </g>
+      <line x1="130" y1="86" x2="130" y2="94" stroke="#1565c0" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <text x="130" y="103" text-anchor="middle" font-size="5.5" fill="#1565c0">claim chain</text>
+      <!-- Group 4: R16-R19 -->
+      <g>
+        <rect x="10" y="108" width="240" height="44" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+        <text x="240" y="120" text-anchor="end" font-size="6" fill="#e65100">SC #5</text>
+        <rect x="20" y="118" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="44" y="128" text-anchor="middle" font-size="5.5" fill="#e65100">R19</text>
+        <line x1="68" y1="125" x2="76" y2="125" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="78" y="118" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="102" y="128" text-anchor="middle" font-size="5.5" fill="#e65100">R18</text>
+        <line x1="126" y1="125" x2="134" y2="125" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="136" y="118" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="160" y="128" text-anchor="middle" font-size="5.5" fill="#e65100">R17</text>
+        <line x1="184" y1="125" x2="192" y2="125" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="194" y="118" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="218" y="128" text-anchor="middle" font-size="5.5" fill="#e65100">R16</text>
+      </g>
+      <line x1="130" y1="152" x2="130" y2="158" stroke="#1565c0" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <text x="130" y="175" text-anchor="middle" font-size="12" fill="#bbb">...</text>
+      <text x="130" y="190" text-anchor="middle" font-size="6.5" fill="#888">SC #4 .. SC #2</text>
+      <text x="130" y="205" text-anchor="middle" font-size="12" fill="#bbb">...</text>
+      <!-- Group 0: R0-R3 -->
+      <g>
+        <rect x="10" y="215" width="240" height="44" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+        <text x="240" y="227" text-anchor="end" font-size="6" fill="#e65100">SC #1</text>
+        <rect x="20" y="225" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="44" y="235" text-anchor="middle" font-size="5.5" fill="#e65100">R3</text>
+        <line x1="68" y1="232" x2="76" y2="232" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="78" y="225" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="102" y="235" text-anchor="middle" font-size="5.5" fill="#e65100">R2</text>
+        <line x1="126" y1="232" x2="134" y2="232" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="136" y="225" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="160" y="235" text-anchor="middle" font-size="5.5" fill="#e65100">R1</text>
+        <line x1="184" y1="232" x2="192" y2="232" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="194" y="225" width="48" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="218" y="235" text-anchor="middle" font-size="5.5" fill="#e65100">R0</text>
+      </g>
+      <line x1="130" y1="259" x2="130" y2="267" stroke="#999" stroke-width="0.7" marker-end="url(#a1)"/>
+      <rect x="90" y="270" width="80" height="18" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+      <text x="130" y="282" text-anchor="middle" font-size="7" fill="#1b5e20" font-weight="700">S_0</text>
+      <text x="130" y="306" text-anchor="middle" font-size="7.5" fill="#e65100" font-weight="700">6 sumchecks, 24 rounds</text>
+      <text x="130" y="318" text-anchor="middle" font-size="7" fill="#555">4 rounds per sumcheck</text>
+      <text x="130" y="330" text-anchor="middle" font-size="7" fill="#555">FS depth: 6 x log(h)</text>
+    </svg>
+  </div>
+
+  <!-- k-parallel (k=4) circuit -->
+  <div>
+    <p style="font-size:0.8em; font-weight:700; color:#6a1b9a; margin-bottom:6px;">k-parallel (k=4): 4 batched sumchecks</p>
+    <svg viewBox="0 0 260 520" style="width:100%;">
+      <rect x="90" y="2" width="80" height="18" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+      <text x="130" y="14" text-anchor="middle" font-size="7" fill="#0d47a1" font-weight="700">S_24</text>
+      <!-- Group labels -->
+      <text x="28" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G0</text>
+      <text x="66" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G1</text>
+      <text x="104" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G2</text>
+      <text x="142" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G3</text>
+      <text x="180" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G4</text>
+      <text x="218" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G5</text>
+      <!-- Layer 0: last round of each group -->
+      <g>
+        <rect x="5" y="38" width="250" height="42" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="130" y="50" text-anchor="middle" font-size="6" fill="#6a1b9a" font-weight="700">Layer 0 (1 batched SC + boundary zerocheck)</text>
+        <rect x="14" y="56" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="30" y="66" text-anchor="middle" font-size="5" fill="#6a1b9a">R3</text>
+        <rect x="52" y="56" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="68" y="66" text-anchor="middle" font-size="5" fill="#6a1b9a">R7</text>
+        <rect x="90" y="56" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="106" y="66" text-anchor="middle" font-size="5" fill="#6a1b9a">R11</text>
+        <rect x="128" y="56" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="144" y="66" text-anchor="middle" font-size="5" fill="#6a1b9a">R15</text>
+        <rect x="166" y="56" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="182" y="66" text-anchor="middle" font-size="5" fill="#6a1b9a">R19</text>
+        <rect x="204" y="56" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="220" y="66" text-anchor="middle" font-size="5" fill="#6a1b9a">R23</text>
+      </g>
+      <line x1="130" y1="80" x2="130" y2="88" stroke="#6a1b9a" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Layer 1 -->
+      <g>
+        <rect x="5" y="92" width="250" height="42" rx="5" fill="#ede7f6" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="130" y="104" text-anchor="middle" font-size="6" fill="#6a1b9a" font-weight="700">Layer 1 (1 batched SC)</text>
+        <rect x="14" y="110" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="30" y="120" text-anchor="middle" font-size="5" fill="#6a1b9a">R2</text>
+        <rect x="52" y="110" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="68" y="120" text-anchor="middle" font-size="5" fill="#6a1b9a">R6</text>
+        <rect x="90" y="110" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="106" y="120" text-anchor="middle" font-size="5" fill="#6a1b9a">R10</text>
+        <rect x="128" y="110" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="144" y="120" text-anchor="middle" font-size="5" fill="#6a1b9a">R14</text>
+        <rect x="166" y="110" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="182" y="120" text-anchor="middle" font-size="5" fill="#6a1b9a">R18</text>
+        <rect x="204" y="110" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="220" y="120" text-anchor="middle" font-size="5" fill="#6a1b9a">R22</text>
+      </g>
+      <line x1="130" y1="134" x2="130" y2="142" stroke="#6a1b9a" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Layer 2 -->
+      <g>
+        <rect x="5" y="146" width="250" height="42" rx="5" fill="#ede7f6" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="130" y="158" text-anchor="middle" font-size="6" fill="#6a1b9a" font-weight="700">Layer 2 (1 batched SC)</text>
+        <rect x="14" y="164" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="30" y="174" text-anchor="middle" font-size="5" fill="#6a1b9a">R1</text>
+        <rect x="52" y="164" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="68" y="174" text-anchor="middle" font-size="5" fill="#6a1b9a">R5</text>
+        <rect x="90" y="164" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="106" y="174" text-anchor="middle" font-size="5" fill="#6a1b9a">R9</text>
+        <rect x="128" y="164" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="144" y="174" text-anchor="middle" font-size="5" fill="#6a1b9a">R13</text>
+        <rect x="166" y="164" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="182" y="174" text-anchor="middle" font-size="5" fill="#6a1b9a">R17</text>
+        <rect x="204" y="164" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="220" y="174" text-anchor="middle" font-size="5" fill="#6a1b9a">R21</text>
+      </g>
+      <line x1="130" y1="188" x2="130" y2="196" stroke="#6a1b9a" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Layer 3 -->
+      <g>
+        <rect x="5" y="200" width="250" height="42" rx="5" fill="#ede7f6" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="130" y="212" text-anchor="middle" font-size="6" fill="#6a1b9a" font-weight="700">Layer 3 (1 batched SC, final)</text>
+        <rect x="14" y="218" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="30" y="228" text-anchor="middle" font-size="5" fill="#6a1b9a">R0</text>
+        <rect x="52" y="218" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="68" y="228" text-anchor="middle" font-size="5" fill="#6a1b9a">R4</text>
+        <rect x="90" y="218" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="106" y="228" text-anchor="middle" font-size="5" fill="#6a1b9a">R8</text>
+        <rect x="128" y="218" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="144" y="228" text-anchor="middle" font-size="5" fill="#6a1b9a">R12</text>
+        <rect x="166" y="218" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="182" y="228" text-anchor="middle" font-size="5" fill="#6a1b9a">R16</text>
+        <rect x="204" y="218" width="32" height="14" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="220" y="228" text-anchor="middle" font-size="5" fill="#6a1b9a">R20</text>
+      </g>
+      <line x1="130" y1="242" x2="130" y2="250" stroke="#999" stroke-width="0.7" marker-end="url(#a1)"/>
+      <rect x="90" y="254" width="80" height="18" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+      <text x="130" y="266" text-anchor="middle" font-size="7" fill="#1b5e20" font-weight="700">S_0</text>
+      <text x="130" y="290" text-anchor="middle" font-size="7.5" fill="#6a1b9a" font-weight="700">4 sumchecks, 24 rounds</text>
+      <text x="130" y="302" text-anchor="middle" font-size="7" fill="#555">6 groups batched per SC</text>
+      <text x="130" y="314" text-anchor="middle" font-size="7" fill="#555">FS depth: 4 x log(h)</text>
+    </svg>
+  </div>
+
+  </div><!-- three-col -->
+</div>
+
+<!-- ==================== CIRCUIT OVERVIEW (k=6) ==================== -->
+<div class="panel">
+  <h2>Complementary View (k=6, n_groups=4)</h2>
+  <p style="font-size:0.8em; color:#555; margin-bottom:10px;">
+    With k=6: flat has 4 sumchecks (same as par-4), parallel has 6 sumchecks (same as flat-4).
+    The flat/parallel roles swap.
+  </p>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+
+  <!-- k-flat (k=6) -->
+  <div>
+    <p style="font-size:0.8em; font-weight:700; color:#e65100; margin-bottom:6px;">k-flat (k=6): 4 sequential sumchecks</p>
+    <svg viewBox="0 0 340 340" style="width:100%;">
+      <rect x="140" y="2" width="60" height="18" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+      <text x="170" y="14" text-anchor="middle" font-size="7" fill="#0d47a1" font-weight="700">S_24</text>
+      <!-- Group 3: R18-R23 -->
+      <g>
+        <rect x="10" y="28" width="320" height="52" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+        <text x="320" y="40" text-anchor="end" font-size="6" fill="#e65100">SC #4</text>
+        <rect x="18" y="42" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="39" y="52" text-anchor="middle" font-size="5" fill="#e65100">R23</text>
+        <line x1="60" y1="49" x2="66" y2="49" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="68" y="42" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="89" y="52" text-anchor="middle" font-size="5" fill="#e65100">R22</text>
+        <line x1="110" y1="49" x2="116" y2="49" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="118" y="42" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="139" y="52" text-anchor="middle" font-size="5" fill="#e65100">R21</text>
+        <line x1="160" y1="49" x2="166" y2="49" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="168" y="42" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="189" y="52" text-anchor="middle" font-size="5" fill="#e65100">R20</text>
+        <line x1="210" y1="49" x2="216" y2="49" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="218" y="42" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="239" y="52" text-anchor="middle" font-size="5" fill="#e65100">R19</text>
+        <line x1="260" y1="49" x2="266" y2="49" stroke="#e65100" stroke-width="0.5" marker-end="url(#a1)"/>
+        <rect x="268" y="42" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="289" y="52" text-anchor="middle" font-size="5" fill="#e65100">R18</text>
+        <text x="170" y="72" text-anchor="middle" font-size="5" fill="#c62828">zerocheck: tw[0..4]</text>
+      </g>
+      <line x1="170" y1="80" x2="170" y2="88" stroke="#1565c0" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <text x="170" y="98" text-anchor="middle" font-size="5.5" fill="#1565c0">claim chain</text>
+      <!-- Group 2: R12-R17 -->
+      <g>
+        <rect x="10" y="104" width="320" height="36" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+        <text x="320" y="116" text-anchor="end" font-size="6" fill="#e65100">SC #3</text>
+        <rect x="18" y="114" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="39" y="124" text-anchor="middle" font-size="5" fill="#e65100">R17</text>
+        <rect x="68" y="114" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="89" y="124" text-anchor="middle" font-size="5" fill="#e65100">R16</text>
+        <rect x="118" y="114" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="139" y="124" text-anchor="middle" font-size="5" fill="#e65100">R15</text>
+        <rect x="168" y="114" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="189" y="124" text-anchor="middle" font-size="5" fill="#e65100">R14</text>
+        <rect x="218" y="114" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="239" y="124" text-anchor="middle" font-size="5" fill="#e65100">R13</text>
+        <rect x="268" y="114" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="289" y="124" text-anchor="middle" font-size="5" fill="#e65100">R12</text>
+      </g>
+      <line x1="170" y1="140" x2="170" y2="148" stroke="#1565c0" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Group 1: R6-R11 -->
+      <g>
+        <rect x="10" y="152" width="320" height="36" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+        <text x="320" y="164" text-anchor="end" font-size="6" fill="#e65100">SC #2</text>
+        <rect x="18" y="162" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="39" y="172" text-anchor="middle" font-size="5" fill="#e65100">R11</text>
+        <rect x="68" y="162" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="89" y="172" text-anchor="middle" font-size="5" fill="#e65100">R10</text>
+        <rect x="118" y="162" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="139" y="172" text-anchor="middle" font-size="5" fill="#e65100">R9</text>
+        <rect x="168" y="162" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="189" y="172" text-anchor="middle" font-size="5" fill="#e65100">R8</text>
+        <rect x="218" y="162" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="239" y="172" text-anchor="middle" font-size="5" fill="#e65100">R7</text>
+        <rect x="268" y="162" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="289" y="172" text-anchor="middle" font-size="5" fill="#e65100">R6</text>
+      </g>
+      <line x1="170" y1="188" x2="170" y2="196" stroke="#1565c0" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Group 0: R0-R5 -->
+      <g>
+        <rect x="10" y="200" width="320" height="36" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+        <text x="320" y="212" text-anchor="end" font-size="6" fill="#e65100">SC #1</text>
+        <rect x="18" y="210" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="39" y="220" text-anchor="middle" font-size="5" fill="#e65100">R5</text>
+        <rect x="68" y="210" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="89" y="220" text-anchor="middle" font-size="5" fill="#e65100">R4</text>
+        <rect x="118" y="210" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="139" y="220" text-anchor="middle" font-size="5" fill="#e65100">R3</text>
+        <rect x="168" y="210" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="189" y="220" text-anchor="middle" font-size="5" fill="#e65100">R2</text>
+        <rect x="218" y="210" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="239" y="220" text-anchor="middle" font-size="5" fill="#e65100">R1</text>
+        <rect x="268" y="210" width="42" height="14" rx="2" fill="#fff" stroke="#e65100" stroke-width="0.7"/>
+        <text x="289" y="220" text-anchor="middle" font-size="5" fill="#e65100">R0</text>
+      </g>
+      <line x1="170" y1="236" x2="170" y2="244" stroke="#999" stroke-width="0.7" marker-end="url(#a1)"/>
+      <rect x="140" y="248" width="60" height="18" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+      <text x="170" y="260" text-anchor="middle" font-size="7" fill="#1b5e20" font-weight="700">S_0</text>
+      <text x="170" y="284" text-anchor="middle" font-size="7.5" fill="#e65100" font-weight="700">4 sumchecks, 24 rounds</text>
+      <text x="170" y="296" text-anchor="middle" font-size="7" fill="#555">6 rounds per sumcheck</text>
+      <text x="170" y="308" text-anchor="middle" font-size="7" fill="#555">FS depth: 4 x log(h) = same as par-4</text>
+    </svg>
+  </div>
+
+  <!-- k-parallel (k=6) -->
+  <div>
+    <p style="font-size:0.8em; font-weight:700; color:#6a1b9a; margin-bottom:6px;">k-parallel (k=6): 6 batched sumchecks</p>
+    <svg viewBox="0 0 340 340" style="width:100%;">
+      <rect x="140" y="2" width="60" height="18" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+      <text x="170" y="14" text-anchor="middle" font-size="7" fill="#0d47a1" font-weight="700">S_24</text>
+      <text x="55" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G0</text>
+      <text x="130" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G1</text>
+      <text x="205" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G2</text>
+      <text x="280" y="32" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">G3</text>
+      <!-- Layer 0 -->
+      <g>
+        <rect x="10" y="38" width="320" height="32" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="170" y="50" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">Layer 0 (batched + boundary zerocheck)</text>
+        <rect x="30" y="54" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="55" y="63" text-anchor="middle" font-size="5" fill="#6a1b9a">R5</text>
+        <rect x="105" y="54" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="130" y="63" text-anchor="middle" font-size="5" fill="#6a1b9a">R11</text>
+        <rect x="180" y="54" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="205" y="63" text-anchor="middle" font-size="5" fill="#6a1b9a">R17</text>
+        <rect x="255" y="54" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="280" y="63" text-anchor="middle" font-size="5" fill="#6a1b9a">R23</text>
+      </g>
+      <line x1="170" y1="70" x2="170" y2="78" stroke="#6a1b9a" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Layer 1 -->
+      <g>
+        <rect x="10" y="82" width="320" height="32" rx="5" fill="#ede7f6" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="170" y="94" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">Layer 1</text>
+        <rect x="30" y="98" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="55" y="107" text-anchor="middle" font-size="5" fill="#6a1b9a">R4</text>
+        <rect x="105" y="98" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="130" y="107" text-anchor="middle" font-size="5" fill="#6a1b9a">R10</text>
+        <rect x="180" y="98" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="205" y="107" text-anchor="middle" font-size="5" fill="#6a1b9a">R16</text>
+        <rect x="255" y="98" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="280" y="107" text-anchor="middle" font-size="5" fill="#6a1b9a">R22</text>
+      </g>
+      <line x1="170" y1="114" x2="170" y2="122" stroke="#6a1b9a" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Layer 2 -->
+      <g>
+        <rect x="10" y="126" width="320" height="32" rx="5" fill="#ede7f6" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="170" y="138" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">Layer 2</text>
+        <rect x="30" y="142" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="55" y="151" text-anchor="middle" font-size="5" fill="#6a1b9a">R3</text>
+        <rect x="105" y="142" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="130" y="151" text-anchor="middle" font-size="5" fill="#6a1b9a">R9</text>
+        <rect x="180" y="142" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="205" y="151" text-anchor="middle" font-size="5" fill="#6a1b9a">R15</text>
+        <rect x="255" y="142" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="280" y="151" text-anchor="middle" font-size="5" fill="#6a1b9a">R21</text>
+      </g>
+      <line x1="170" y1="158" x2="170" y2="166" stroke="#6a1b9a" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Layer 3 -->
+      <g>
+        <rect x="10" y="170" width="320" height="32" rx="5" fill="#ede7f6" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="170" y="182" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">Layer 3</text>
+        <rect x="30" y="186" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="55" y="195" text-anchor="middle" font-size="5" fill="#6a1b9a">R2</text>
+        <rect x="105" y="186" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="130" y="195" text-anchor="middle" font-size="5" fill="#6a1b9a">R8</text>
+        <rect x="180" y="186" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="205" y="195" text-anchor="middle" font-size="5" fill="#6a1b9a">R14</text>
+        <rect x="255" y="186" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="280" y="195" text-anchor="middle" font-size="5" fill="#6a1b9a">R20</text>
+      </g>
+      <line x1="170" y1="202" x2="170" y2="210" stroke="#6a1b9a" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Layer 4 -->
+      <g>
+        <rect x="10" y="214" width="320" height="32" rx="5" fill="#ede7f6" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="170" y="226" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">Layer 4</text>
+        <rect x="30" y="230" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="55" y="239" text-anchor="middle" font-size="5" fill="#6a1b9a">R1</text>
+        <rect x="105" y="230" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="130" y="239" text-anchor="middle" font-size="5" fill="#6a1b9a">R7</text>
+        <rect x="180" y="230" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="205" y="239" text-anchor="middle" font-size="5" fill="#6a1b9a">R13</text>
+        <rect x="255" y="230" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="280" y="239" text-anchor="middle" font-size="5" fill="#6a1b9a">R19</text>
+      </g>
+      <line x1="170" y1="246" x2="170" y2="254" stroke="#6a1b9a" stroke-width="0.7" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+      <!-- Layer 5 -->
+      <g>
+        <rect x="10" y="258" width="320" height="32" rx="5" fill="#ede7f6" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="170" y="270" text-anchor="middle" font-size="5.5" fill="#6a1b9a" font-weight="700">Layer 5 (final)</text>
+        <rect x="30" y="274" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="55" y="283" text-anchor="middle" font-size="5" fill="#6a1b9a">R0</text>
+        <rect x="105" y="274" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="130" y="283" text-anchor="middle" font-size="5" fill="#6a1b9a">R6</text>
+        <rect x="180" y="274" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="205" y="283" text-anchor="middle" font-size="5" fill="#6a1b9a">R12</text>
+        <rect x="255" y="274" width="50" height="12" rx="2" fill="#fff" stroke="#6a1b9a" stroke-width="0.7"/>
+        <text x="280" y="283" text-anchor="middle" font-size="5" fill="#6a1b9a">R18</text>
+      </g>
+      <line x1="170" y1="290" x2="170" y2="298" stroke="#999" stroke-width="0.7" marker-end="url(#a1)"/>
+      <rect x="140" y="302" width="60" height="18" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+      <text x="170" y="314" text-anchor="middle" font-size="7" fill="#1b5e20" font-weight="700">S_0</text>
+      <text x="170" y="334" text-anchor="middle" font-size="7" fill="#555">FS depth: 6 x log(h) = same as flat-4</text>
+    </svg>
+  </div>
+
+  </div><!-- two-col -->
+</div>
+
+<!-- ==================== COMMON I/O ==================== -->
+<div class="panel">
+  <h2>Common GKR Circuit Input / Output</h2>
+  <p style="font-size:0.85em; margin-bottom:8px;">
+    All three approaches operate on the same data and produce the same result type.
+  </p>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+    <div>
+      <strong style="color:#1565c0;">Circuit Input</strong>
+      <span class="type-sig">
+        trace: CompactTrace {<br>
+        &nbsp;&nbsp;round_inputs: Vec&lt;Vec&lt;[u64; 25]&gt;&gt;, // 24 entries, S_0..S_23<br>
+        &nbsp;&nbsp;final_output: Vec&lt;[u64; 25]&gt;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// S_24<br>
+        }
+      </span>
+      <p style="font-size:0.78em; color:#555;">
+        The verifier also samples from the Fiat-Shamir channel:<br>
+        <code>bit_challenge: F</code>, <code>high_point: Vec&lt;F&gt;</code>, <code>lane_weights: [F; 25]</code>
+      </p>
+    </div>
+    <div>
+      <strong style="color:#2e7d32;">Circuit Output</strong>
+      <span class="type-sig">
+        BitIndexedEndpointClaims&lt;F&gt; {<br>
+        &nbsp;&nbsp;output_claim: BitIndexedMixedClaim&lt;F&gt;,&nbsp;// claim on S_24<br>
+        &nbsp;&nbsp;input_claim:&nbsp; BitIndexedMixedClaim&lt;F&gt;,&nbsp;// claim on S_0<br>
+        }
+      </span>
+      <p style="font-size:0.78em; color:#555;">
+        Each <code>BitIndexedMixedClaim</code> contains <code>bit_challenge</code>,
+        <code>high_point</code>, <code>lane_weights: [F; 25]</code>,
+        <code>lane_evals: [F; 25]</code>, <code>mixed_eval: F</code>.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== THREE COLUMNS ==================== -->
+<div class="three-col">
+
+<!-- ======= k=1 ======= -->
+<div class="panel" style="border-top: 4px solid #c62828;">
+  <h2 style="color:#c62828; border:none; margin-top:0; font-size:1em;">k=1: 24 Sequential Sumchecks</h2>
+  <p style="font-size:0.75em; color:#555; margin-bottom:8px;">
+    <code>protocol.rs::prove()</code> / <code>verify()</code><br>
+    Each sumcheck = one <code>FusedRoundReduction</code> (chi+iota+theta+rho+pi).
+  </p>
+  <svg viewBox="0 0 300 520" style="width:100%;">
+    <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#999"/></marker></defs>
+
+    <!-- Output claim -->
+    <rect x="40" y="5" width="220" height="28" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="150" y="16" text-anchor="middle" font-size="7.5" font-weight="700" fill="#0d47a1">output_claim on S_24 (final_output)</text>
+    <text x="150" y="28" text-anchor="middle" font-size="6" fill="#1565c0">BitIndexedMixedClaim from channel</text>
+
+    <line x1="150" y1="33" x2="150" y2="44" stroke="#999" stroke-width="1" marker-end="url(#arr)"/>
+
+    <!-- SC #23 -->
+    <rect x="15" y="46" width="270" height="44" rx="5" fill="#ffebee" stroke="#c62828" stroke-width="1.5"/>
+    <text x="150" y="60" text-anchor="middle" font-size="8" font-weight="700" fill="#c62828">SC #24: FusedRoundReduction { round: 23 }</text>
+    <text x="150" y="72" text-anchor="middle" font-size="6.5" fill="#555">fused(S_23) = S_24, log(h) sumcheck rounds</text>
+    <text x="150" y="83" text-anchor="middle" font-size="6" fill="#888">Output: FusedRoundOutput { reduced_high_point, input_evals }</text>
+
+    <line x1="150" y1="90" x2="150" y2="100" stroke="#1565c0" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+    <text x="150" y="110" text-anchor="middle" font-size="6.5" fill="#1565c0">new BitIndexedMixedClaim on S_23 (from channel weights)</text>
+
+    <!-- SC #22 -->
+    <rect x="15" y="116" width="270" height="36" rx="5" fill="#ffebee" stroke="#c62828" stroke-width="1.5"/>
+    <text x="150" y="130" text-anchor="middle" font-size="8" font-weight="700" fill="#c62828">SC #23: FusedRoundReduction { round: 22 }</text>
+    <text x="150" y="144" text-anchor="middle" font-size="6.5" fill="#555">fused(S_22) = S_23, log(h) sumcheck rounds</text>
+
+    <text x="150" y="175" text-anchor="middle" font-size="14" fill="#bbb">...</text>
+    <text x="150" y="192" text-anchor="middle" font-size="7" fill="#888">22 more sumchecks (rounds 21 down to 0)</text>
+    <text x="150" y="208" text-anchor="middle" font-size="14" fill="#bbb">...</text>
+
+    <!-- SC #1 -->
+    <rect x="15" y="218" width="270" height="36" rx="5" fill="#ffebee" stroke="#c62828" stroke-width="1.5"/>
+    <text x="150" y="232" text-anchor="middle" font-size="8" font-weight="700" fill="#c62828">SC #1: FusedRoundReduction { round: 0 }</text>
+    <text x="150" y="244" text-anchor="middle" font-size="6.5" fill="#555">fused(S_0) = S_1, log(h) sumcheck rounds</text>
+
+    <line x1="150" y1="254" x2="150" y2="264" stroke="#999" stroke-width="1" marker-end="url(#arr)"/>
+
+    <!-- Input claim -->
+    <rect x="20" y="266" width="260" height="34" rx="4" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+    <text x="150" y="280" text-anchor="middle" font-size="7.5" font-weight="700" fill="#1b5e20">input_claim on S_0</text>
+    <text x="150" y="292" text-anchor="middle" font-size="6" fill="#2e7d32">BitIndexedMixedClaim (vs commitment)</text>
+
+    <!-- Properties -->
+    <rect x="10" y="315" width="280" height="148" rx="6" fill="#fff9c4" stroke="#f9a825" stroke-width="1"/>
+    <text x="150" y="330" text-anchor="middle" font-size="9" font-weight="700" fill="#f57f17">Properties</text>
+    <text x="20" y="348" font-size="7.5" fill="#333">Sumchecks: <tspan font-weight="700">24</tspan> (sequential)</text>
+    <text x="20" y="364" font-size="7.5" fill="#333">FS depth: <tspan font-weight="700">24 x log(h)</tspan></text>
+    <text x="20" y="380" font-size="7.5" fill="#333">Data per sumcheck: <tspan font-weight="700">1 round_inputs[r]</tspan></text>
+    <text x="20" y="396" font-size="7.5" fill="#333">Intermediates: <tspan font-weight="700" fill="#2e7d32">all virtual</tspan> (claim chaining)</text>
+    <text x="20" y="412" font-size="7.5" fill="#333">Prover type: <tspan font-weight="700">FusedRoundProver</tspan></text>
+    <text x="20" y="428" font-size="7.5" fill="#333">Per SC output: <tspan font-weight="700">FusedRoundOutput</tspan></text>
+    <text x="20" y="444" font-size="7.5" fill="#333">PCS needs: <tspan font-weight="700" fill="#2e7d32">only S_0 + S_24</tspan></text>
+    <text x="20" y="460" font-size="7.5" fill="#333">Transcript: <tspan font-weight="700">largest</tspan> (24 sumcheck proofs)</text>
+  </svg>
+</div>
+
+<!-- ======= k-flat ======= -->
+<div class="panel" style="border-top: 4px solid #e65100;">
+  <h2 style="color:#e65100; border:none; margin-top:0; font-size:1em;">k-flat (k=4): 6 Sequential Sumchecks</h2>
+  <p style="font-size:0.75em; color:#555; margin-bottom:8px;">
+    <code>protocol.rs::prove_grouped()</code> / <code>verify_grouped()</code><br>
+    Each sumcheck = one <code>GroupedRoundReduction</code> batching k transitions.
+  </p>
+  <svg viewBox="0 0 300 540" style="width:100%;">
+    <!-- Output claim -->
+    <rect x="40" y="5" width="220" height="28" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="150" y="16" text-anchor="middle" font-size="7.5" font-weight="700" fill="#0d47a1">output_claim on S_24 (final_output)</text>
+    <text x="150" y="28" text-anchor="middle" font-size="6" fill="#1565c0">BitIndexedMixedClaim from channel</text>
+
+    <line x1="150" y1="33" x2="150" y2="44" stroke="#999" stroke-width="1" marker-end="url(#arr)"/>
+
+    <!-- Group 5 [R20-R23] -->
+    <rect x="10" y="46" width="280" height="82" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+    <text x="150" y="60" text-anchor="middle" font-size="8" font-weight="700" fill="#e65100">Group 5: { round_start: 20, group_size: 4 }</text>
+    <text x="150" y="72" text-anchor="middle" font-size="6.5" fill="#555">1 sumcheck, 4 fused transitions batched</text>
+    <text x="150" y="84" text-anchor="middle" font-size="6" fill="#e65100">Data: round_inputs[20..23] + final_output (5 word arrays)</text>
+    <text x="150" y="96" text-anchor="middle" font-size="5.5" fill="#e65100">f(x) = fused_23(x) + Sigma tw[r] * (fused_{20+r}(x) - S_{21+r}(x))</text>
+    <text x="150" y="107" text-anchor="middle" font-size="5.5" fill="#c62828" font-weight="700">Residuals vanish on booleans (zerocheck)</text>
+    <text x="150" y="118" text-anchor="middle" font-size="6" fill="#c62828">S_21, S_22, S_23 materialized as [u64; 25]</text>
+
+    <line x1="150" y1="128" x2="150" y2="136" stroke="#1565c0" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+    <text x="150" y="146" text-anchor="middle" font-size="6.5" fill="#1565c0">GroupedRoundOutput { reduced_high_point, input_evals }</text>
+    <text x="150" y="157" text-anchor="middle" font-size="6.5" fill="#1565c0">--> new claim on S_20</text>
+
+    <!-- Group 4 -->
+    <rect x="10" y="164" width="280" height="36" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+    <text x="150" y="178" text-anchor="middle" font-size="8" font-weight="700" fill="#e65100">Group 4: { round_start: 16, group_size: 4 }</text>
+    <text x="150" y="192" text-anchor="middle" font-size="6.5" fill="#555">round_inputs[16..19], same zerocheck structure</text>
+
+    <text x="150" y="220" text-anchor="middle" font-size="14" fill="#bbb">...</text>
+    <text x="150" y="234" text-anchor="middle" font-size="7" fill="#888">4 more groups (groups 3, 2, 1, 0)</text>
+
+    <!-- Group 0 -->
+    <rect x="10" y="248" width="280" height="36" rx="5" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+    <text x="150" y="262" text-anchor="middle" font-size="8" font-weight="700" fill="#e65100">Group 0: { round_start: 0, group_size: 4 }</text>
+    <text x="150" y="276" text-anchor="middle" font-size="6.5" fill="#555">round_inputs[0..3], S_1,S_2,S_3 materialized</text>
+
+    <line x1="150" y1="284" x2="150" y2="294" stroke="#999" stroke-width="1" marker-end="url(#arr)"/>
+
+    <!-- Input claim -->
+    <rect x="10" y="296" width="280" height="52" rx="4" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+    <text x="150" y="310" text-anchor="middle" font-size="7.5" font-weight="700" fill="#1b5e20">input_claim on S_0</text>
+    <text x="150" y="322" text-anchor="middle" font-size="6" fill="#e65100">18 intermediate states materialized as u64 words</text>
+    <text x="150" y="332" text-anchor="middle" font-size="6" fill="#e65100">Intra-group: zerocheck residuals (transition_weights)</text>
+    <text x="150" y="342" text-anchor="middle" font-size="6" fill="#2e7d32">Inter-group: claim chaining (6 boundaries virtual)</text>
+
+    <!-- Properties -->
+    <rect x="10" y="360" width="280" height="166" rx="6" fill="#fff9c4" stroke="#f9a825" stroke-width="1"/>
+    <text x="150" y="375" text-anchor="middle" font-size="9" font-weight="700" fill="#f57f17">Properties</text>
+    <text x="20" y="393" font-size="7.5" fill="#333">Sumchecks: <tspan font-weight="700">6</tspan> (each 4x heavier)</text>
+    <text x="20" y="409" font-size="7.5" fill="#333">FS depth: <tspan font-weight="700">6 x log(h)</tspan></text>
+    <text x="20" y="425" font-size="7.5" fill="#333">Data per SC: <tspan font-weight="700" fill="#c62828">k round_inputs + output</tspan></text>
+    <text x="20" y="441" font-size="7.5" fill="#333">Intermediates: <tspan font-weight="700" fill="#c62828">18 materialized</tspan> (k-1 per group)</text>
+    <text x="20" y="457" font-size="7.5" fill="#333">Prover type: <tspan font-weight="700">GroupedRoundProver</tspan></text>
+    <text x="20" y="473" font-size="7.5" fill="#333">Intra-group: <tspan font-weight="700" fill="#e65100">zerocheck</tspan> (transition_weights)</text>
+    <text x="20" y="489" font-size="7.5" fill="#333">Inter-group: <tspan font-weight="700" fill="#2e7d32">claim chaining</tspan></text>
+    <text x="20" y="505" font-size="7.5" fill="#333">PCS needs: <tspan font-weight="700" fill="#c62828">S_0, S_24 + 18 within-group</tspan> (boundaries chained)</text>
+    <text x="20" y="521" font-size="7.5" fill="#333">Transcript: <tspan font-weight="700">medium</tspan> (6 sumcheck proofs)</text>
+  </svg>
+</div>
+
+<!-- ======= k-parallel ======= -->
+<div class="panel" style="border-top: 4px solid #6a1b9a;">
+  <h2 style="color:#6a1b9a; border:none; margin-top:0; font-size:1em;">k-parallel (k=4): 4 Batched Sumchecks</h2>
+  <p style="font-size:0.75em; color:#555; margin-bottom:8px;">
+    <code>parallel_groups.rs::prove_parallel()</code> / <code>verify_parallel()</code><br>
+    Each sumcheck batches all 6 groups at one layer via <code>BatchedParallelProver</code>.
+  </p>
+  <svg viewBox="0 0 300 560" style="width:100%;">
+    <!-- Output claim -->
+    <rect x="40" y="5" width="220" height="28" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="150" y="16" text-anchor="middle" font-size="7.5" font-weight="700" fill="#0d47a1">output_claim on S_24 (final_output)</text>
+    <text x="150" y="28" text-anchor="middle" font-size="6" fill="#1565c0">= group_claims[5], BitIndexedMixedClaim</text>
+
+    <line x1="150" y1="33" x2="150" y2="42" stroke="#999" stroke-width="1" marker-end="url(#arr)"/>
+
+    <!-- Boundary advice -->
+    <rect x="10" y="44" width="280" height="22" rx="4" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1"/>
+    <text x="150" y="58" text-anchor="middle" font-size="6" fill="#6a1b9a">group_claims[0..5] on S_4, S_8, S_12, S_16, S_20 (boundary outputs)</text>
+
+    <line x1="150" y1="66" x2="150" y2="73" stroke="#999" stroke-width="1" marker-end="url(#arr)"/>
+
+    <!-- Layer 0 with zerocheck -->
+    <rect x="10" y="76" width="280" height="82" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="2"/>
+    <text x="150" y="90" text-anchor="middle" font-size="8" font-weight="700" fill="#6a1b9a">Layer 0: batched + boundary zerocheck</text>
+    <text x="150" y="102" text-anchor="middle" font-size="6.5" fill="#555">group_round(g,4,0): R3, R7, R11, R15, R19, R23</text>
+    <text x="150" y="114" text-anchor="middle" font-size="5.5" fill="#6a1b9a">Sigma (bw[g]+rw[g]) * fused_g(x) - rw[g] * boundary_g(x)</text>
+    <text x="150" y="124" text-anchor="middle" font-size="5.5" fill="#c62828" font-weight="700">rw[g] residuals enforce: fused(S_{4g+3}) = S_{4(g+1)} for g &lt; 5</text>
+    <text x="150" y="136" text-anchor="middle" font-size="5.5" fill="#888">Data: round_inputs[3,7,11,15,19,23] + boundary outputs</text>
+    <text x="150" y="148" text-anchor="middle" font-size="5.5" fill="#888">residual_weights sampled from channel for groups 0..4</text>
+
+    <line x1="150" y1="158" x2="150" y2="164" stroke="#6a1b9a" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+    <text x="150" y="174" text-anchor="middle" font-size="6" fill="#6a1b9a">input_evals --> new claims on S_3,S_7,S_11,S_15,S_19,S_23</text>
+
+    <!-- Layer 1 -->
+    <rect x="10" y="182" width="280" height="36" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="150" y="196" text-anchor="middle" font-size="8" font-weight="700" fill="#0d47a1">Layer 1: R2, R6, R10, R14, R18, R22</text>
+    <text x="150" y="210" text-anchor="middle" font-size="6.5" fill="#555">Standard batched, 6 groups (no boundary zerocheck)</text>
+
+    <line x1="150" y1="218" x2="150" y2="224" stroke="#1565c0" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+
+    <!-- Layer 2 -->
+    <rect x="10" y="230" width="280" height="36" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="150" y="244" text-anchor="middle" font-size="8" font-weight="700" fill="#0d47a1">Layer 2: R1, R5, R9, R13, R17, R21</text>
+    <text x="150" y="258" text-anchor="middle" font-size="6.5" fill="#555">Standard batched, 6 groups</text>
+
+    <line x1="150" y1="266" x2="150" y2="272" stroke="#1565c0" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+
+    <!-- Layer 3 -->
+    <rect x="10" y="278" width="280" height="44" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="150" y="292" text-anchor="middle" font-size="8" font-weight="700" fill="#0d47a1">Layer 3 (final): R0, R4, R8, R12, R16, R20</text>
+    <text x="150" y="304" text-anchor="middle" font-size="6.5" fill="#555">Standard batched, 6 groups</text>
+    <text x="150" y="316" text-anchor="middle" font-size="6" fill="#6a1b9a">At g=0: returns input_claim from input_evals</text>
+
+    <line x1="150" y1="322" x2="150" y2="330" stroke="#999" stroke-width="1" marker-end="url(#arr)"/>
+
+    <!-- Input claim -->
+    <rect x="10" y="332" width="280" height="42" rx="4" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+    <text x="150" y="346" text-anchor="middle" font-size="7.5" font-weight="700" fill="#1b5e20">input_claim on S_0 (from group 0, last layer)</text>
+    <text x="150" y="358" text-anchor="middle" font-size="6" fill="#2e7d32">All within-group intermediates virtual</text>
+    <text x="150" y="368" text-anchor="middle" font-size="6" fill="#6a1b9a">Boundary consistency proven at layer 0 via zerocheck</text>
+
+    <!-- Properties -->
+    <rect x="10" y="386" width="280" height="166" rx="6" fill="#fff9c4" stroke="#f9a825" stroke-width="1"/>
+    <text x="150" y="401" text-anchor="middle" font-size="9" font-weight="700" fill="#f57f17">Properties</text>
+    <text x="20" y="419" font-size="7.5" fill="#333">Sumchecks: <tspan font-weight="700">4</tspan> (each batches 6 groups)</text>
+    <text x="20" y="435" font-size="7.5" fill="#333">FS depth: <tspan font-weight="700" fill="#2e7d32">4 x log(h)</tspan> (shallowest)</text>
+    <text x="20" y="451" font-size="7.5" fill="#333">Data per SC: <tspan font-weight="700" fill="#c62828">6 round_inputs + boundaries</tspan></text>
+    <text x="20" y="467" font-size="7.5" fill="#333">Intermediates: <tspan font-weight="700" fill="#2e7d32">virtual</tspan> (no inter-group commit)</text>
+    <text x="20" y="483" font-size="7.5" fill="#333">Prover type: <tspan font-weight="700">BatchedParallelProver</tspan></text>
+    <text x="20" y="499" font-size="7.5" fill="#333">Boundary check: <tspan font-weight="700" fill="#6a1b9a">zerocheck</tspan> (residual_weights, layer 0)</text>
+    <text x="20" y="515" font-size="7.5" fill="#333">PCS needs: <tspan font-weight="700">S_0 + boundary outputs</tspan></text>
+    <text x="20" y="531" font-size="7.5" fill="#333">Transcript: <tspan font-weight="700" fill="#2e7d32">smallest</tspan> (4 sumcheck proofs)</text>
+    <text x="20" y="547" font-size="7.5" fill="#333">group_round(g,k,l): <tspan font-weight="700">g*k + (k-1-l)</tspan></text>
+  </svg>
+</div>
+
+</div><!-- three-col -->
+
+<!-- ==================== COMPARISON TABLE ==================== -->
+<div class="panel">
+  <h2>Side-by-Side Comparison (k=4, n_groups=6)</h2>
+  <table class="cost">
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th style="color:#c62828;">k=1 (standard)</th>
+        <th style="color:#e65100;">k-flat</th>
+        <th style="color:#6a1b9a;">k-parallel</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="text-align:left;">Source file</td>
+        <td><code>protocol.rs</code></td>
+        <td><code>protocol.rs</code> + <code>grouped_round.rs</code></td>
+        <td><code>parallel_groups.rs</code></td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Number of sumchecks</td>
+        <td>24</td>
+        <td style="font-weight:700;">6 (k transitions each)</td>
+        <td style="font-weight:700;">4 (6 groups batched)</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Fiat-Shamir depth</td>
+        <td>24 x log(h)</td>
+        <td>6 x log(h)</td>
+        <td style="color:#2e7d32; font-weight:700;">4 x log(h)</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Fused evals per instance</td>
+        <td>24</td>
+        <td>24</td>
+        <td>24</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Data arrays per sumcheck</td>
+        <td>1 round_inputs</td>
+        <td style="color:#c62828;">k round_inputs + output</td>
+        <td style="color:#c62828;">6 round_inputs + boundaries</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Prover type</td>
+        <td>FusedRoundProver</td>
+        <td>GroupedRoundProver</td>
+        <td>BatchedParallelProver</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Within-group intermediates</td>
+        <td style="color:#2e7d32;">all virtual</td>
+        <td style="color:#c62828;">18 materialized (u64)</td>
+        <td style="color:#2e7d32;">all virtual</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Intra-group consistency</td>
+        <td style="color:#2e7d32;">N/A (1 transition per SC)</td>
+        <td style="color:#e65100; font-weight:700;">zerocheck via transition_weights (k-1 residuals)</td>
+        <td style="color:#2e7d32;">N/A (1 transition per group per layer)</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Inter-group boundary</td>
+        <td style="color:#2e7d32;">N/A (claim chaining)</td>
+        <td>claim chaining (between groups)</td>
+        <td style="color:#6a1b9a; font-weight:700;">zerocheck via residual_weights (layer 0)</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">GKR output type</td>
+        <td colspan="3"><code>BitIndexedEndpointClaims { output_claim (S_24), input_claim (S_0) }</code></td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Transcript size</td>
+        <td>largest</td>
+        <td>medium</td>
+        <td style="font-weight:700;">smallest</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">
+    Run <code>cargo run --release -p binius-keccak-check --example compare_provers</code> for actual benchmark numbers.
+    Use <code>KECCAK_LOG_BATCH=8,10,12,14</code> and <code>KECCAK_GROUP_SIZE=1,2,4,6</code> environment variables.
+  </p>
+  <table class="cost" style="margin-top:12px;">
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th style="color:#e65100;">flat-4</th>
+        <th style="color:#6a1b9a;">par-4</th>
+        <th style="color:#e65100;">flat-6</th>
+        <th style="color:#6a1b9a;">par-6</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="text-align:left;">Sumchecks</td>
+        <td>6</td><td>4</td><td>4</td><td>6</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">FS depth</td>
+        <td>6·log h</td><td style="font-weight:700;">4·log h</td><td style="font-weight:700;">4·log h</td><td>6·log h</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">Within-group intermediates</td>
+        <td>18 materialized</td><td>virtual</td><td>20 materialized</td><td>virtual</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;">PCS polynomials</td>
+        <td>500</td><td>175</td><td>550</td><td style="font-weight:700;">125</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">
+    k=4 and k=6 are complementary: <strong>flat-6 and par-4</strong> have the same FS depth (4·log h);
+    <strong>flat-4 and par-6</strong> have the same FS depth (6·log h). They differ in PCS cost and memory locality.
+  </p>
+</div>
+
+<!-- ==================== DATA FLOW DETAIL ==================== -->
+<div class="panel">
+  <h2>Data Flow: How Each Approach Chains Rounds</h2>
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; font-size:0.82em;">
+    <div>
+      <strong style="color:#c62828;">k=1</strong>
+      <ol style="padding-left:18px; line-height:1.7;">
+        <li>Channel samples <code>bit_challenge</code>, <code>high_point</code>, <code>output_weights</code></li>
+        <li>Build output_claim on S_24</li>
+        <li><code>for round in (0..24).rev()</code>:</li>
+        <li style="list-style:none; padding-left:12px;">
+          <code>prove_round_from_words(round_inputs[round], FusedRoundReduction{..}, channel)</code>
+        </li>
+        <li style="list-style:none; padding-left:12px;">
+          --> FusedRoundOutput { reduced_high_point, input_evals }
+        </li>
+        <li style="list-style:none; padding-left:12px;">
+          Build new claim from <code>channel.sample_array()</code> + input_evals
+        </li>
+        <li>Return <code>{ output_claim, input_claim }</code></li>
+      </ol>
+    </div>
+    <div>
+      <strong style="color:#e65100;">k-flat</strong>
+      <ol style="padding-left:18px; line-height:1.7;">
+        <li>Channel samples <code>bit_challenge</code>, <code>high_point</code>, <code>output_weights</code></li>
+        <li>Build output_claim on S_24</li>
+        <li><code>for group_idx in (0..6).rev()</code>:</li>
+        <li style="list-style:none; padding-left:12px;">
+          Sample <code>transition_weights</code> (k-1 values for intra-group zerochecks)
+        </li>
+        <li style="list-style:none; padding-left:12px;">
+          Batched poly: <code>fused_last(x) + Sigma tw[r] * (fused_r(x) - S_{r+1}(x))</code>
+        </li>
+        <li style="list-style:none; padding-left:12px;">
+          Residuals <code>fused_r(x) - S_{r+1}(x)</code> vanish on booleans (zerocheck)
+        </li>
+        <li style="list-style:none; padding-left:12px;">
+          --> GroupedRoundOutput { reduced_high_point, input_evals }
+        </li>
+        <li>Return <code>{ output_claim, input_claim }</code></li>
+      </ol>
+    </div>
+    <div>
+      <strong style="color:#6a1b9a;">k-parallel</strong>
+      <ol style="padding-left:18px; line-height:1.7;">
+        <li>Channel samples <code>bit_challenge</code>, <code>high_point</code></li>
+        <li>Build 6 group_claims on S_4, S_8, ..., S_24</li>
+        <li><code>for layer in 0..4</code>:</li>
+        <li style="list-style:none; padding-left:12px;">
+          Sample <code>batch_weights</code> (6 values)
+        </li>
+        <li style="list-style:none; padding-left:12px;">
+          Layer 0: also sample <code>residual_weights</code> (5 values)
+        </li>
+        <li style="list-style:none; padding-left:12px;">
+          <code>prove_single_mlecheck(BatchedParallelProver{..}, channel)</code>
+        </li>
+        <li style="list-style:none; padding-left:12px;">
+          Update all 6 group_claims from input_evals
+        </li>
+        <li>At layer 3, g=0: return <code>{ output_claim, input_claim }</code></li>
+      </ol>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== WHY PARALLEL IS SLOWER ==================== -->
+<div class="panel">
+  <h2>Memory Pressure: Why k-parallel Can Be Slower at Large Batches</h2>
+  <p style="font-size:0.85em; margin-bottom:10px;">
+    All three approaches do the same total work (24 fused chi+iota+theta+rho+pi evaluations per instance).
+    The difference is <strong>how many state arrays each sumcheck must scan</strong>.
+  </p>
+  <svg viewBox="0 0 860 140" style="max-width:860px; display:block; margin:0 auto;">
+    <rect x="10" y="10" width="840" height="120" rx="8" fill="#f9f9f9" stroke="#666" stroke-width="1"/>
+
+    <text x="20" y="35" font-size="10" font-weight="700" fill="#c62828">k=1:</text>
+    <text x="80" y="35" font-size="9" fill="#333">Each sumcheck scans 1 round_inputs array. 24 sumchecks x 1 array = 24 array-scans.</text>
+    <text x="80" y="48" font-size="9" fill="#333">Smallest working set per sumcheck. Best cache behavior.</text>
+
+    <text x="20" y="72" font-size="10" font-weight="700" fill="#e65100">k-flat:</text>
+    <text x="80" y="72" font-size="9" fill="#333">Each sumcheck scans k=4 round_inputs + 1 output. 6 sumchecks x 5 = 30 array-scans.</text>
+    <text x="80" y="85" font-size="9" fill="#333">Moderate working set. Fewer Gruen32 initializations.</text>
+
+    <text x="20" y="109" font-size="10" font-weight="700" fill="#6a1b9a">k-parallel:</text>
+    <text x="80" y="109" font-size="9" fill="#333">Each sumcheck scans 6 round_inputs + boundaries. 4 sumchecks x ~7 = ~28 array-scans.</text>
+    <text x="80" y="122" font-size="9" fill="#c62828">Largest working set per sumcheck. Worst cache behavior at large h.</text>
+  </svg>
+  <p style="font-size:0.82em; color:#555; margin-top:8px;">
+    At small batch sizes where data fits in cache, all approaches are competitive.
+    At large batch sizes (h >= 2^14), the per-sumcheck working set of k-parallel can exceed cache,
+    causing slowdown despite having fewer sumchecks. Use <code>compare_provers</code> to measure on your hardware.
+  </p>
+</div>
+
+<!-- ==================== TRADEOFFS ==================== -->
+<div class="panel">
+  <h2>Each Approach Wins on a Different Metric</h2>
+  <table class="cost" style="font-size:0.82em;">
+    <thead>
+      <tr>
+        <th>Optimize for...</th>
+        <th>Best approach</th>
+        <th>Why</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Fewest PCS commitments</td>
+        <td style="color:#c62828; font-weight:700;">k=1</td>
+        <td style="text-align:left;">Only S_0 + S_24 need commitments. All intermediates virtual.</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Smallest working set per SC</td>
+        <td style="color:#c62828; font-weight:700;">k=1</td>
+        <td style="text-align:left;">1 array per sumcheck. Best for large batches.</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Shallowest Fiat-Shamir depth</td>
+        <td style="color:#6a1b9a; font-weight:700;">k-parallel</td>
+        <td style="text-align:left;">4 x log(h) rounds. Best for recursive verification.</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Smallest transcript (no PCS)</td>
+        <td style="color:#6a1b9a; font-weight:700;">k-parallel</td>
+        <td style="text-align:left;">Fewest sumcheck proofs written to transcript.</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Virtual intermediates + parallelism</td>
+        <td style="color:#6a1b9a; font-weight:700;">k-parallel</td>
+        <td style="text-align:left;">Only approach with both + provable boundary consistency.</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Intra-group zerocheck</td>
+        <td style="color:#e65100; font-weight:700;">k-flat</td>
+        <td style="text-align:left;">transition_weights enforce fused(S_r) = S_{r+1} within each group. Residuals vanish on booleans.</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Inter-group boundary zerocheck</td>
+        <td style="color:#6a1b9a; font-weight:700;">k-parallel</td>
+        <td style="text-align:left;">residual_weights enforce fused(S_{4g+3}) = S_{4(g+1)} at layer 0.</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Fewest Gruen32 initializations</td>
+        <td style="color:#6a1b9a; font-weight:700;">k-parallel</td>
+        <td style="text-align:left;">Only 4 sumcheck rounds vs 24 (k=1) or 6 (k-flat).</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700;">Simplest implementation</td>
+        <td style="color:#c62828; font-weight:700;">k=1</td>
+        <td style="text-align:left;">One FusedRoundProver, no batching or boundary logic.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ==================== KEY TYPES ==================== -->
+<div class="panel">
+  <h2>Key Rust Types</h2>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; font-size:0.82em;">
+    <div>
+      <strong>Reductions (sumcheck input)</strong>
+      <span class="type-sig">
+        FusedRoundReduction { output_claim, round }<br>
+        GroupedRoundReduction { output_claim, round_start, group_size, transition_weights }<br>
+        // k-parallel has no explicit reduction type;<br>
+        // it constructs BatchedParallelProver directly
+      </span>
+    </div>
+    <div>
+      <strong>Outputs (sumcheck result)</strong>
+      <span class="type-sig">
+        FusedRoundOutput { reduced_high_point, input_evals: [F; 25] }<br>
+        GroupedRoundOutput { reduced_high_point, input_evals: [F; 25] }<br>
+        // k-parallel uses prove_single_mlecheck output directly:<br>
+        // { multilinear_evals: Vec&lt;F&gt;, challenges: Vec&lt;F&gt; }
+      </span>
+    </div>
+    <div>
+      <strong>Claims</strong>
+      <span class="type-sig">
+        BitIndexedMixedClaim { bit_challenge, high_point, lane_weights, lane_evals, mixed_eval }<br>
+        BitIndexedEndpointClaims { output_claim, input_claim }
+      </span>
+    </div>
+    <div>
+      <strong>Trace</strong>
+      <span class="type-sig">
+        CompactTrace {<br>
+        &nbsp;&nbsp;round_inputs: Vec&lt;Vec&lt;[u64; 25]&gt;&gt;, // [S_0, ..., S_23]<br>
+        &nbsp;&nbsp;final_output: Vec&lt;[u64; 25]&gt;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// S_24<br>
+        }
+      </span>
+    </div>
+  </div>
+</div>
+
+</div><!-- container -->
+</body>
+</html>

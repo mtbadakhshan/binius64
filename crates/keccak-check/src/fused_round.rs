@@ -270,7 +270,7 @@ fn validate_reduction<F: BinaryField, P: PackedField<Scalar = F>>(
 }
 
 #[inline]
-fn apply_linear_recipe_to_low_vectors<F: Field>(
+pub(crate) fn apply_linear_recipe_to_low_vectors<F: Field>(
 	input_low_vectors: &[[F; BIT_INDEX_SIZE]; 25],
 ) -> [[F; BIT_INDEX_SIZE]; 25] {
 	let static_recipe = linear_recipe_static();
@@ -295,7 +295,7 @@ fn apply_linear_recipe_to_blocks<F: Field>(
 }
 
 #[inline]
-fn fused_chi_linear_pair_eval_blocks<F: Field>(
+pub(crate) fn fused_chi_linear_pair_eval_blocks<F: Field>(
 	input_lo: &[[F; BIT_INDEX_SIZE]; 25],
 	input_hi: &[[F; BIT_INDEX_SIZE]; 25],
 	lane_weights: &[F; 25],
@@ -344,7 +344,7 @@ fn fused_chi_linear_pair_eval_blocks<F: Field>(
 }
 
 #[inline]
-fn fused_chi_linear_word_pair_eval<F: Field>(
+pub(crate) fn fused_chi_linear_word_pair_eval<F: Field>(
 	input_lo: &[u64; 25],
 	input_hi: &[u64; 25],
 	lane_weights: &[F; 25],
