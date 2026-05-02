@@ -28,6 +28,7 @@ use itertools::chain;
 use std::sync::Arc;
 
 use super::error::Error;
+use super::error::VerificationError;
 use crate::{
 	config::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
@@ -42,6 +43,12 @@ use crate::{
 	},
 	ring_switch,
 };
+
+const PROOF_MODE_BASEFOLD: &[u8] = b"binius64-proof-mode:basefold:v1";
+#[cfg(feature = "hachi")]
+const PROOF_MODE_HACHI_FULL_OPEN: &[u8] = b"binius64-proof-mode:hachi-full-open:v1";
+#[cfg(feature = "hachi")]
+const PROOF_MODE_HACHI_SUCCINCT: &[u8] = b"binius64-proof-mode:hachi-succinct:v1";
 
 pub const SECURITY_BITS: usize = 96;
 
@@ -285,7 +292,7 @@ where
 	iop_compiler:
 		BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
 	#[cfg(feature = "hachi")]
-	hachi_succinct_setup: Arc<HachiSuccinctSetup>,
+	hachi_succinct_setup: Option<Arc<HachiSuccinctSetup>>,
 }
 
 impl<MerkleHash, MerkleCompress> Verifier<MerkleHash, MerkleCompress>
@@ -332,7 +339,8 @@ where
 			&ConstantArityStrategy::new(fri_arity),
 		);
 		#[cfg(feature = "hachi")]
-		let hachi_succinct_setup = Arc::new(HachiSuccinctSetup::new(iop_compiler.oracle_specs()));
+		let hachi_succinct_setup = HachiSuccinctSetup::supports(iop_compiler.oracle_specs())
+			.then(|| Arc::new(HachiSuccinctSetup::new(iop_compiler.oracle_specs())));
 
 		Ok(Self {
 			iop_verifier,
@@ -393,8 +401,8 @@ where
 
 	/// Returns the reusable setup for the succinct Hachi bridge channel.
 	#[cfg(feature = "hachi")]
-	pub fn hachi_succinct_setup(&self) -> Arc<HachiSuccinctSetup> {
-		Arc::clone(&self.hachi_succinct_setup)
+	pub fn hachi_succinct_setup(&self) -> Option<Arc<HachiSuccinctSetup>> {
+		self.hachi_succinct_setup.as_ref().map(Arc::clone)
 	}
 
 	pub fn verify<Challenger_: Challenger>(
@@ -402,6 +410,7 @@ where
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		read_proof_mode(transcript, PROOF_MODE_BASEFOLD)?;
 		// Create channel and delegate to IOPVerifier::verify
 		let mut channel = self.iop_compiler.create_channel(transcript);
 		self.iop_verifier.verify(public, &mut channel)
@@ -414,6 +423,7 @@ where
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		read_proof_mode(transcript, PROOF_MODE_HACHI_FULL_OPEN)?;
 		let mut channel =
 			HachiFullOpenVerifierChannel::new(transcript, self.iop_compiler.oracle_specs());
 		self.iop_verifier.verify(public, &mut channel)
@@ -426,13 +436,31 @@ where
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		read_proof_mode(transcript, PROOF_MODE_HACHI_SUCCINCT)?;
+		let hachi_succinct_setup = self.hachi_succinct_setup.as_deref().ok_or_else(|| {
+			Error::Unsupported(
+				"hachi-succinct requires witness oracles with at least 7 variables".to_string(),
+			)
+		})?;
 		let mut channel = HachiSuccinctVerifierChannel::new(
 			transcript,
 			self.iop_compiler.oracle_specs(),
-			&self.hachi_succinct_setup,
+			hachi_succinct_setup,
 		);
 		self.iop_verifier.verify(public, &mut channel)
 	}
+}
+
+fn read_proof_mode<Challenger_: Challenger>(
+	transcript: &mut VerifierTranscript<Challenger_>,
+	expected: &[u8],
+) -> Result<(), Error> {
+	let mut actual = vec![0; expected.len()];
+	transcript.message().read_bytes(&mut actual)?;
+	if actual != expected {
+		return Err(VerificationError::ProofModeMismatch.into());
+	}
+	Ok(())
 }
 
 fn verify_bitand_reduction<F, C>(

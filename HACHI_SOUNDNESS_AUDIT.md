@@ -8,13 +8,13 @@ This audit reviewed the Hachi integration paths added to Binius64, with the spec
 
 The conservative `hachi-full-open` path appears sound: it reveals the terminal Binius oracle and verifies the native `B128` inner-product relation directly.
 
-The `hachi-succinct` path should be treated as **not production-sound in its current form**. The main issue is that its Booleanity proof is a single unweighted global sum over Hachi's odd-prime field:
+Update: the critical `hachi-succinct` Booleanity gap described below has been remediated. The succinct bridge now uses a verifier-random equality-weighted degree-3 Booleanity sumcheck:
 
 ```text
-sum_x B(x) * (B(x) - 1) = 0
+sum_x eq(r, x) * B(x) * (B(x) - 1) = 0
 ```
 
-This does not imply pointwise Booleanity because nonzero terms can cancel in a prime field. Since the characteristic-2-to-prime bridge is sound only when the committed table is actually Boolean, this creates a plausible false-proof attack surface for the succinct bridge.
+The verifier samples `r` after the Hachi commitment is transcript-bound and checks the final claim as `eq(r, z) * B(z) * (B(z) - 1)` against the Hachi opening of `B(z)`. This removes the cancellation attack surface from the previous unweighted global sum, assuming the Hachi PCS remains binding for the committed field polynomial.
 
 ## Scope
 
@@ -34,22 +34,26 @@ Validation commands run:
 cargo test -p binius-iop --features hachi -- --nocapture
 cargo test -p binius-iop-prover --features hachi -- --nocapture
 cargo test -p binius-examples --features hachi --lib -- --nocapture
+cargo test -p binius-prover --features hachi hachi_proof_mode_mismatches_reject -- --nocapture
 cargo run -p binius-examples --features hachi --example keccak -- --max-len-bytes 32 --message-len 32 --compression hachi-succinct
+cargo run -p binius-examples --features hachi --example keccak -- --max-len-bytes 256 --message-len 256 --compression hachi-succinct
 ```
 
-All commands passed. The tests do not cover the most important adversarial succinct-proof cases listed below.
+All commands passed after remediation.
 
 ## Findings
 
 ### Critical: Succinct Booleanity Check Is Not Pointwise
 
-Status: confirmed soundness gap in the Binius-side succinct bridge.
+Status: remediated.
 
 Relevant code:
 
 - `crates/iop/src/hachi_bridge.rs`
-  - `booleanity_table_sumcheck_inputs`
-  - `verify_product_sumcheck_transcript`
+  - `WeightedBooleanitySumcheckProof`
+  - `prove_weighted_booleanity_sumcheck_transcript`
+  - `verify_weighted_booleanity_sumcheck_transcript`
+  - `evaluate_hachi_eq`
 - `crates/iop/src/hachi_succinct_channel.rs`
   - `HachiSuccinctVerifierChannel::verify_oracle_relations`
 - `crates/iop-prover/src/hachi_succinct_channel.rs`
@@ -76,21 +80,21 @@ Jolt comparison:
 
 Jolt does not rely on an unweighted global Booleanity sum for this style of constraint. Its Booleanity checks are randomly weighted, typically with equality-polynomial weights and batching challenges, so cancellation in an unweighted aggregate is not enough.
 
-Recommended remediation:
+Implemented remediation:
 
-- Replace the unweighted Booleanity check with a randomly weighted Booleanity sumcheck, for example proving:
+- The unweighted Booleanity check was replaced with a randomly weighted degree-3 Booleanity sumcheck:
 
 ```text
 sum_x eq(r, x) * B(x) * (B(x) - 1) = 0
 ```
 
-for verifier-sampled `r` after the commitment is fixed.
-
-- Alternatively, use a PCS/admissible-message proof that verifier-side enforces the committed object is one-hot/Boolean. The current use of `OneHotPoly` is an honest-prover representation and should not be treated as verifier-enforced unless Hachi explicitly proves that property.
+- `r` is sampled from the Binius transcript after the commitment is fixed.
+- The verifier discharges the final sumcheck claim with the existing Hachi opening at the Booleanity point, checking `eq(r, z) * B(z) * (B(z) - 1)`.
+- A regression test now constructs a non-Boolean table with cancelling unweighted `sum B(B - 1)` and confirms the weighted claim is nonzero.
 
 ### High: Hachi `OneHotPoly` Is a Prover-Side Optimization, Not a Verifier-Side Constraint
 
-Status: confirmed dependency gap.
+Status: remediated by explicit verifier-side Booleanity; documented as an implementation-only optimization.
 
 Relevant code:
 
@@ -106,15 +110,15 @@ The honest prover constructs the bit table with Hachi's `OneHotPoly`, but the ve
 
 This reinforces the critical Booleanity issue: the sparse one-hot encoding improves prover performance but does not by itself constrain a malicious prover's committed message.
 
-Recommended remediation:
+Implemented remediation:
 
 - Treat one-hot encoding as an implementation optimization only.
-- Add explicit verifier-checked Booleanity or one-hot constraints.
-- Document the distinction in `HACHI_PCS_INTEGRATION.md` and any API docs.
+- Add explicit verifier-checked Booleanity through the weighted Booleanity sumcheck.
+- Document the distinction in `HACHI_PCS_INTEGRATION.md` and in the succinct prover channel.
 
 ### High: Hachi Object Deserialization Does Not Enforce EOF
 
-Status: confirmed malleability and Fiat-Shamir hardening issue.
+Status: remediated.
 
 Relevant code:
 
@@ -127,15 +131,15 @@ If Hachi deserializers accept trailing bytes, a prover can create multiple trans
 
 This is not by itself a complete false-proof exploit, but it weakens the Fiat-Shamir soundness argument and creates a challenge-grinding/malleability surface.
 
-Recommended remediation:
+Implemented remediation:
 
-- Change `read_hachi` to deserialize through a cursor and reject unless the cursor is at EOF.
-- Add tests that append trailing bytes to each Hachi scalar/proof object before a challenge is sampled and assert rejection.
-- Consider fixed-size length checks for scalar types and bounded maximum lengths for proof objects.
+- `read_hachi` now deserializes through a cursor and rejects unless the cursor is at EOF.
+- `read_hachi` rejects length prefixes above a conservative maximum before allocation.
+- Tests cover trailing bytes on a Hachi scalar payload and oversized payload rejection.
 
 ### Medium: Proof Mode Is Not Bound In-Proof
 
-Status: confirmed API hardening issue.
+Status: remediated.
 
 Relevant code:
 
@@ -150,17 +154,14 @@ The proof mode is selected by the API method or CLI option, not encoded into the
 
 This does not appear to create a silent false-proof issue because mode mismatches should fail parsing or transcript finalization. However, applications must externally bind proof bytes to the expected verification mode.
 
-Recommended remediation:
+Implemented remediation:
 
-- Add an explicit mode/domain tag to the top-level transcript.
-- Add mode-mismatch tests:
-  - BaseFold proof under `verify_hachi_succinct`.
-  - Full-open proof under `verify_hachi_succinct`.
-  - Succinct proof under `verify_hachi_full_open`.
+- Added explicit top-level transcript mode tags for BaseFold, `hachi-full-open`, and `hachi-succinct`.
+- Added mode-mismatch tests covering BaseFold/full-open/succinct verifier entry points.
 
 ### Medium: No Adversarial End-to-End Tests For `hachi-succinct`
 
-Status: confirmed test gap.
+Status: partially remediated.
 
 Existing tests cover many components:
 
@@ -184,11 +185,18 @@ Missing high-value end-to-end tests:
 - Use a non-Boolean table with cancelling `sum B(B - 1)`.
 - Verify proof-mode mismatches.
 
-These tests should be added before treating the succinct bridge as security-critical.
+Added high-value tests:
+
+- Non-Boolean cancelling table for the old unweighted Booleanity claim.
+- Hachi trailing-byte and oversized-payload rejection.
+- Proof-mode mismatch rejection.
+- Representative byte-mutation rejection for `hachi-succinct` proofs.
+
+Remaining useful coverage would be field-specific mutation helpers that target each transcript segment by semantic name rather than by representative byte offsets.
 
 ### Low: `hachi` Feature Can Panic During Setup For Small Circuits
 
-Status: confirmed availability issue.
+Status: remediated.
 
 Relevant code:
 
@@ -201,14 +209,15 @@ When the `hachi` feature is enabled, `Verifier::setup` always constructs `HachiS
 
 This can panic for small circuits. It is not a false-statement soundness issue, but it is a configuration footgun.
 
-Recommended remediation:
+Implemented remediation:
 
-- Lazily initialize succinct setup only for `verify_hachi_succinct`.
-- Or return a structured setup error instead of asserting.
+- `Verifier::setup` now stores `Option<Arc<HachiSuccinctSetup>>`.
+- Unsupported small-oracle configurations no longer panic during BaseFold or `hachi-full-open` setup.
+- `prove_hachi_succinct` and `verify_hachi_succinct` now fail with structured errors when the succinct Hachi bridge does not support the oracle shape.
 
 ### Low: Prover-Controlled Hachi Object Lengths Can Cause DoS
 
-Status: confirmed robustness issue.
+Status: remediated with a conservative cap.
 
 Relevant code:
 
@@ -217,14 +226,14 @@ Relevant code:
 
 `read_hachi` allocates a `Vec<u8>` of prover-controlled length. This can be abused for memory exhaustion against services verifying untrusted proofs.
 
-Recommended remediation:
+Implemented remediation:
 
-- Add maximum encoded sizes derived from verifier-side proof shape.
-- Reject oversized Hachi object lengths before allocation.
+- `read_hachi` rejects length prefixes above a conservative maximum before allocation.
+- A tighter future improvement would derive per-object limits from the verifier-side Hachi proof shape.
 
 ### Low: Hachi Challenge Sampling Has Small Bias
 
-Status: confirmed soundness-accounting issue.
+Status: remediated.
 
 Relevant code:
 
@@ -232,9 +241,9 @@ Relevant code:
   - `sample_hachi_scalar`
   - `verify_sample_hachi_scalar`
 
-Hachi challenges are sampled by taking a Binius `B128` transcript sample and reducing the canonical `u128` into Hachi's `fp128` field. Because the Hachi modulus is slightly below `2^128`, this introduces a small bias.
+Previously, Hachi challenges were sampled by taking a Binius `B128` transcript sample and reducing the canonical `u128` into Hachi's `fp128` field. Because the Hachi modulus is slightly below `2^128`, this introduced a small bias.
 
-This is unlikely to matter practically for the current degree checks, but it should be accounted for in the formal soundness bound or replaced with rejection sampling/domain-native Hachi scalar sampling.
+The bridge now uses rejection sampling with `from_canonical_u128_checked`, preserving transcript determinism while removing the modulo-reduction bias.
 
 ## Sound Components
 
@@ -300,30 +309,18 @@ The Hachi one-hot selector coordinate is prepended with value `1`, consistently 
 
 The Hachi verifier path absorbs batch shape, commitments, opening points, and opening values before deriving its internal batching challenges. This part looks sound assuming the Hachi PCS itself is binding for the committed field polynomial.
 
-## Recommended Fix Plan
+## Remediation Summary
 
-1. Fix succinct Booleanity before using `hachi-succinct` for sound proofs.
-   - Add a randomly weighted Booleanity check.
-   - Or add verifier-enforced one-hot/admissible-message proofs in Hachi.
-
-2. Harden Hachi wire decoding.
-   - Enforce EOF after deserializing each length-prefixed object.
-   - Add maximum object lengths.
-   - Add trailing-byte malleability tests.
-
-3. Add adversarial end-to-end tests.
-   - Start with proof mutation tests for `hachi-succinct`.
-   - Include non-Boolean cancellation witnesses if practical.
-
-4. Add top-level mode tags.
-   - Bind `basefold`, `hachi-full-open`, and `hachi-succinct` into the transcript.
-
-5. Make Hachi succinct setup lazy or fallible.
-   - Avoid panics for small circuits in `--features hachi` builds.
+1. Fixed succinct Booleanity with a randomly weighted degree-3 Booleanity sumcheck.
+2. Treated one-hot encoding as prover-only optimization and documented the verifier-side constraint.
+3. Hardened Hachi wire decoding with EOF enforcement, a length cap, and trailing-byte tests.
+4. Added top-level proof mode tags and mode-mismatch tests.
+5. Made Hachi succinct setup optional/fallible for unsupported small circuits.
+6. Replaced modulo-reduced Hachi challenge sampling with rejection sampling.
 
 ## Final Assessment
 
 `hachi-full-open`: no confirmed soundness issue found.
 
-`hachi-succinct`: not sound as currently written, due to the unweighted global Booleanity check. The selected-sum and bounded-parity bridge can be sound only after the verifier has a real pointwise Booleanity or one-hot guarantee for the committed table.
+`hachi-succinct`: the confirmed critical Booleanity gap has been fixed. The selected-sum and bounded-parity bridge now has an explicit verifier-checked Booleanity argument for the committed table. The remaining soundness assumption is that the Hachi PCS is binding for the committed field polynomial and the stated openings.
 

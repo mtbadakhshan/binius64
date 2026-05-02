@@ -34,6 +34,8 @@ pub enum Error {
 	Verification(#[from] VerificationError),
 	#[error("shift reduction error: {0}")]
 	ShiftReduction(#[from] shift::Error),
+	#[error("unsupported proof configuration: {0}")]
+	Unsupported(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -42,4 +44,6 @@ pub enum VerificationError {
 	PublicInputCheckFailed,
 	#[error("final evaluation check of sumcheck and FRI reductions failed")]
 	EvaluationInconsistency,
+	#[error("proof mode tag mismatch")]
+	ProofModeMismatch,
 }

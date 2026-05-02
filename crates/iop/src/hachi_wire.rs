@@ -14,11 +14,18 @@ use hachi_pcs::{
 		LevelProofShape,
 	},
 };
+use std::io::Cursor;
 
 use crate::{
 	channel::Error,
 	hachi_bridge::{BiniusScalar, HachiScalar},
 };
+
+/// Maximum bytes accepted for one length-prefixed Hachi object.
+///
+/// This keeps malformed proofs from forcing unbounded allocations while leaving ample headroom
+/// above the current succinct bridge proof sizes.
+const MAX_HACHI_ENCODED_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Write a Hachi-serializable value to the Binius transcript.
 pub fn write_hachi<T, Challenger_>(transcript: &mut ProverTranscript<Challenger_>, value: &T)
@@ -44,12 +51,20 @@ where
 	Challenger_: Challenger,
 {
 	let len: u64 = transcript.message().read().map_err(|_| Error::ProofEmpty)?;
+	if len > MAX_HACHI_ENCODED_OBJECT_BYTES {
+		return Err(Error::ProofEmpty);
+	}
 	let mut bytes = vec![0u8; len as usize];
 	transcript
 		.message()
 		.read_bytes(&mut bytes)
 		.map_err(|_| Error::ProofEmpty)?;
-	T::deserialize_compressed(&mut &bytes[..], ctx).map_err(|_| Error::ProofEmpty)
+	let mut cursor = Cursor::new(&bytes);
+	let value = T::deserialize_compressed(&mut cursor, ctx).map_err(|_| Error::ProofEmpty)?;
+	if cursor.position() != len {
+		return Err(Error::ProofEmpty);
+	}
+	Ok(value)
 }
 
 /// Sample a Hachi scalar from the Binius Fiat-Shamir transcript.
@@ -59,7 +74,23 @@ pub fn sample_hachi_scalar<Challenger_>(
 where
 	Challenger_: Challenger,
 {
-	HachiScalar::from_canonical_u128_reduced(CanSample::<BiniusScalar>::sample(transcript).val())
+	loop {
+		let sample = CanSample::<BiniusScalar>::sample(transcript).val();
+		if let Some(scalar) = HachiScalar::from_canonical_u128_checked(sample) {
+			return scalar;
+		}
+	}
+}
+
+/// Sample multiple Hachi scalars from the Binius Fiat-Shamir transcript.
+pub fn sample_hachi_scalar_vec<Challenger_>(
+	transcript: &mut ProverTranscript<Challenger_>,
+	len: usize,
+) -> Vec<HachiScalar>
+where
+	Challenger_: Challenger,
+{
+	(0..len).map(|_| sample_hachi_scalar(transcript)).collect()
 }
 
 /// Sample a Hachi scalar from a verifier transcript.
@@ -69,7 +100,25 @@ pub fn verify_sample_hachi_scalar<Challenger_>(
 where
 	Challenger_: Challenger,
 {
-	HachiScalar::from_canonical_u128_reduced(CanSample::<BiniusScalar>::sample(transcript).val())
+	loop {
+		let sample = CanSample::<BiniusScalar>::sample(transcript).val();
+		if let Some(scalar) = HachiScalar::from_canonical_u128_checked(sample) {
+			return scalar;
+		}
+	}
+}
+
+/// Sample multiple Hachi scalars from a verifier transcript.
+pub fn verify_sample_hachi_scalar_vec<Challenger_>(
+	transcript: &mut VerifierTranscript<Challenger_>,
+	len: usize,
+) -> Vec<HachiScalar>
+where
+	Challenger_: Challenger,
+{
+	(0..len)
+		.map(|_| verify_sample_hachi_scalar(transcript))
+		.collect()
 }
 
 /// Write a Hachi batched proof shape.
@@ -262,4 +311,48 @@ where
 {
 	let value: u64 = transcript.message().read().map_err(|_| Error::ProofEmpty)?;
 	Ok(value as usize)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use binius_transcript::fiat_shamir::HasherChallenger;
+	use hachi_pcs::{FromSmallInt, HachiSerialize, primitives::serialization::Compress};
+	use sha2::Sha256;
+
+	type TestChallenger = HasherChallenger<Sha256>;
+
+	fn verifier_transcript_from_hachi_payload(
+		payload: &[u8],
+	) -> VerifierTranscript<TestChallenger> {
+		let mut prover_transcript = ProverTranscript::new(TestChallenger::default());
+		prover_transcript.message().write(&(payload.len() as u64));
+		prover_transcript.message().write_bytes(payload);
+		prover_transcript.into_verifier()
+	}
+
+	#[test]
+	fn read_hachi_rejects_trailing_bytes() {
+		let scalar = HachiScalar::from_u64(42);
+		let mut payload = Vec::new();
+		scalar
+			.serialize_with_mode(&mut payload, Compress::Yes)
+			.unwrap();
+		payload.push(0);
+
+		let mut verifier_transcript = verifier_transcript_from_hachi_payload(&payload);
+
+		assert!(read_hachi::<HachiScalar, _>(&mut verifier_transcript, &()).is_err());
+	}
+
+	#[test]
+	fn read_hachi_rejects_oversized_payload_before_allocation() {
+		let mut prover_transcript = ProverTranscript::new(TestChallenger::default());
+		prover_transcript
+			.message()
+			.write(&(MAX_HACHI_ENCODED_OBJECT_BYTES + 1));
+		let mut verifier_transcript = prover_transcript.into_verifier();
+
+		assert!(read_hachi::<HachiScalar, _>(&mut verifier_transcript, &()).is_err());
+	}
 }

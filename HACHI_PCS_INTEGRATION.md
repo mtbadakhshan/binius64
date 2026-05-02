@@ -73,7 +73,7 @@ Hachi's paper uses ring switching to move statements already living over `R_q`/`
 The sound bridge protocol is:
 
 1. Commit with Hachi to 128 Boolean bit-slice MLEs for the Binius oracle values.
-2. Prove Booleanity for the bit-slice commitments: each committed value is in `{0, 1}` over Hachi's prime field.
+2. Prove Booleanity for the bit-slice commitments: each committed value is in `{0, 1}` over Hachi's prime field. This must be a randomly weighted point-check style argument, not an unweighted global sum that can cancel in the prime field.
 3. For each output bit `k`, derive a public transparent mask selecting exactly the committed witness bits whose XOR is `y_k`.
 4. Open the Hachi bit-slice commitments against those masks to obtain integer sums `S_k`.
 5. Prove bounded parity with quotient witnesses `Q_k`:
@@ -161,13 +161,14 @@ The final succinct bridge replaces the full oracle reveal with committed bit-sli
    - The final sumcheck claim is discharged by one Hachi batched opening of all `B_j` at the sumcheck point.
 
 3. **Booleanity proof**
-   - A second degree-2 sumcheck proves
+   - A degree-3 equality-weighted sumcheck proves
 
    ```text
-   sum_i sum_j B_j(i) * (B_j(i) - 1) = 0
+   sum_i sum_j eq(r, (i, j)) * B_j(i) * (B_j(i) - 1) = 0
    ```
 
-   - Its final claim is discharged by another Hachi batched opening of all `B_j` at the Booleanity sumcheck point.
+   where `r` is sampled after the bit-table commitment is fixed.
+   - Its final claim is discharged by another Hachi batched opening of all `B_j` at the Booleanity sumcheck point, checking `eq(r, z) * B(z) * (B(z) - 1)`.
 
 4. **Quotient/range proof**
    - The verifier checks public integer bounds:
@@ -196,11 +197,11 @@ The `hachi-succinct` path implements the five-step bridge above. It does not rev
 
 - commits to one Hachi `fp128::D64OneHot` bit-table polynomial `B(i, j)`,
 - proves the selected-bit sum with a Fiat-Shamir product sumcheck,
-- proves bit-slice Booleanity with a second Fiat-Shamir product sumcheck,
+- proves bit-slice Booleanity with a verifier-random equality-weighted degree-3 Fiat-Shamir sumcheck,
 - checks the bounded quotient parity equation,
 - discharges both sumcheck final claims with one Hachi batched opening proof over two points.
 
-The optimized implementation treats the bit index as seven additional multilinear variables, committing to one bit-table polynomial `B(i, j)` rather than 128 independent bit-slice commitment groups. The Boolean table is encoded as a 1-of-2 one-hot polynomial with one extra selector variable. This follows the same claim-batch reduction idea used in Jolt: reduce many related claims by random linear combination before handing them to the PCS.
+The optimized implementation treats the bit index as seven additional multilinear variables, committing to one bit-table polynomial `B(i, j)` rather than 128 independent bit-slice commitment groups. The honest prover encodes the Boolean table as a 1-of-2 `OneHotPoly` with one extra selector variable for Hachi performance, but this is not treated as a verifier-side constraint. Soundness comes from the explicit weighted Booleanity sumcheck plus the Hachi opening proof. This follows the same claim-batch reduction idea used in Jolt: reduce many related claims by random linear combination before handing them to the PCS.
 
 Command:
 
@@ -210,10 +211,9 @@ cargo run -p binius-examples --features hachi --example keccak -- --max-len-byte
 
 Result:
 
-- Prove: 391.00 ms
-- Verify: 102.75 ms
-- PCS-opening phase: 323.54 ms prover, 86.88 ms verifier
-- Proof size: 85,638 bytes (83 KiB)
+- Original prototype: 391.00 ms prove, 102.75 ms verify, 85,638 bytes (83 KiB)
+- After optimization and soundness hardening: 373.04 ms prove, 61.66 ms verify, 83,884 bytes (81.92 KiB)
+- Latest Hachi batched verify core: approximately 1.71 ms
 
 Implementation points:
 
@@ -224,7 +224,7 @@ Implementation points:
 - `Verifier::verify_hachi_succinct`
 - `binius-examples --features hachi --compression hachi-succinct`
 
-This is a complete sound e2e bridge and is now in the expected 80-100 KiB proof-size range. The main remaining performance work is verifier-time optimization: precompute/reuse Hachi setup, add a generated schedule table for this bridge shape, and avoid verifier-side transparent-mask materialization.
+This is a complete sound e2e bridge under the Hachi PCS binding assumption and is now in the expected 80-100 KiB proof-size range. The main remaining performance work is verifier-time optimization: continue tuning generated schedule coverage and avoid verifier-side transparent-mask materialization.
 
 ## Succinct Hachi Optimization Backlog
 
@@ -279,3 +279,34 @@ Latest local result after the second optimization pass:
 - Proof size: 83,439 bytes.
 - Verify time: 60.43 ms.
 - Hachi batched verify: approximately 2.18 ms.
+
+Latest local result after the soundness hardening pass:
+
+- Command: `cargo run -p binius-examples --features hachi --example keccak -- --max-len-bytes 256 --message-len 256 --compression hachi-succinct`
+- Proof size: 83,884 bytes.
+- Prove time: 373.04 ms.
+- Verify time: 61.66 ms.
+- Hachi batched verify: approximately 1.71 ms.
+
+## Soundness Hardening Completed
+
+- [x] **Weighted Booleanity sumcheck**
+  - Status: implemented.
+  - Implementation: `hachi-succinct` now proves `sum_x eq(r, x) * B(x) * (B(x) - 1) = 0` with a degree-3 sumcheck. The verifier samples `r` after the bit-table commitment is fixed and checks the final claim against the existing Hachi opening of `B(z)`.
+  - Impact: removes the unweighted prime-field cancellation gap with only one additional Booleanity round value per sumcheck round and no extra Hachi opening proof.
+
+- [x] **Hachi wire hardening**
+  - Status: implemented.
+  - Implementation: `read_hachi` enforces EOF after deserialization, rejects oversized length prefixes before allocation, and has regression tests for trailing bytes and oversized payloads.
+
+- [x] **Transcript hardening**
+  - Status: implemented.
+  - Implementation: BaseFold, `hachi-full-open`, and `hachi-succinct` proofs now start with explicit top-level proof-mode tags. Hachi scalar challenges use rejection sampling instead of reducing `u128` samples modulo the Hachi field.
+
+- [x] **Small-circuit setup hardening**
+  - Status: implemented.
+  - Implementation: `Verifier::setup` stores the succinct Hachi setup as optional and no longer panics for BaseFold or `hachi-full-open` use on unsupported small-oracle shapes. The succinct entry points now return structured errors when the shape is unsupported.
+
+- [x] **Adversarial coverage**
+  - Status: first pass implemented.
+  - Implementation: tests cover cancelling non-Boolean tables, Hachi trailing-byte/oversized payload rejection, proof-mode mismatch rejection, and representative `hachi-succinct` byte mutations.

@@ -11,6 +11,8 @@ use binius_prover::{
 	Prover, hash::parallel_compression::ParallelCompressionAdaptor, zk_config::ZKProver,
 };
 use binius_transcript::ProverTranscript;
+#[cfg(feature = "hachi")]
+use binius_transcript::VerifierTranscript;
 use binius_verifier::{
 	Verifier,
 	config::StdChallenger,
@@ -117,4 +119,91 @@ fn test_prove_verify_sha256_preimage() {
 fn test_zk_prove_verify_sha256_preimage() {
 	let (cs, witness) = sha256_preimage_circuit();
 	prove_verify_zk(cs, witness);
+}
+
+#[cfg(feature = "hachi")]
+#[test]
+fn hachi_proof_mode_mismatches_reject() {
+	const LOG_INV_RATE: usize = 1;
+
+	let (cs, witness) = sha256_preimage_circuit();
+	let verifier =
+		Verifier::<StdDigest, _>::setup(cs, LOG_INV_RATE, StdCompression::default()).unwrap();
+	let prover = Prover::<OptimalPackedB128, _, StdDigest>::setup(
+		verifier.clone(),
+		ParallelCompressionAdaptor::new(StdCompression::default()),
+	)
+	.unwrap();
+
+	let mut basefold_transcript = ProverTranscript::new(StdChallenger::default());
+	prover
+		.prove(witness.clone(), &mut basefold_transcript)
+		.unwrap();
+	let basefold_proof = basefold_transcript.finalize();
+	let mut verifier_transcript =
+		VerifierTranscript::new(StdChallenger::default(), basefold_proof.clone());
+	assert!(
+		verifier
+			.verify_hachi_full_open(witness.public(), &mut verifier_transcript)
+			.is_err()
+	);
+	let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), basefold_proof);
+	assert!(
+		verifier
+			.verify_hachi_succinct(witness.public(), &mut verifier_transcript)
+			.is_err()
+	);
+
+	let mut full_open_transcript = ProverTranscript::new(StdChallenger::default());
+	prover
+		.prove_hachi_full_open(witness.clone(), &mut full_open_transcript)
+		.unwrap();
+	let full_open_proof = full_open_transcript.finalize();
+	let mut verifier_transcript =
+		VerifierTranscript::new(StdChallenger::default(), full_open_proof.clone());
+	assert!(
+		verifier
+			.verify(witness.public(), &mut verifier_transcript)
+			.is_err()
+	);
+	let mut verifier_transcript =
+		VerifierTranscript::new(StdChallenger::default(), full_open_proof);
+	assert!(
+		verifier
+			.verify_hachi_succinct(witness.public(), &mut verifier_transcript)
+			.is_err()
+	);
+
+	let mut succinct_transcript = ProverTranscript::new(StdChallenger::default());
+	prover
+		.prove_hachi_succinct(witness.clone(), &mut succinct_transcript)
+		.unwrap();
+	let succinct_proof = succinct_transcript.finalize();
+	for offset in [
+		succinct_proof.len() / 4,
+		succinct_proof.len() / 2,
+		succinct_proof.len() - 1,
+	] {
+		let mut tampered = succinct_proof.clone();
+		tampered[offset] ^= 1;
+		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), tampered);
+		assert!(
+			verifier
+				.verify_hachi_succinct(witness.public(), &mut verifier_transcript)
+				.is_err()
+		);
+	}
+	let mut verifier_transcript =
+		VerifierTranscript::new(StdChallenger::default(), succinct_proof.clone());
+	assert!(
+		verifier
+			.verify(witness.public(), &mut verifier_transcript)
+			.is_err()
+	);
+	let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), succinct_proof);
+	assert!(
+		verifier
+			.verify_hachi_full_open(witness.public(), &mut verifier_transcript)
+			.is_err()
+	);
 }

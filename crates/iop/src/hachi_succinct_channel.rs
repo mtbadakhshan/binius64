@@ -26,8 +26,8 @@ use crate::{
 	channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	hachi_bridge::{
 		BINIUS_SCALAR_BITS, BatchedParityBridgeProof, BiniusScalar, HachiScalar, batched_u64_sum,
-		evaluate_batched_selected_sum_table_mask, parity_sum_bounds,
-		verify_product_sumcheck_transcript,
+		evaluate_batched_selected_sum_table_mask, evaluate_hachi_eq, parity_sum_bounds,
+		verify_product_sumcheck_transcript, verify_weighted_booleanity_sumcheck_transcript,
 	},
 	hachi_wire,
 };
@@ -77,6 +77,11 @@ pub struct HachiSuccinctSetup {
 }
 
 impl HachiSuccinctSetup {
+	/// Returns whether the current one-hot bridge preset supports all oracle specs.
+	pub fn supports(oracle_specs: &[OracleSpec]) -> bool {
+		oracle_specs.iter().all(|spec| spec.log_msg_len >= 7)
+	}
+
 	/// Builds reusable Hachi setup from the oracle specs chosen during verifier setup.
 	pub fn new(oracle_specs: &[OracleSpec]) -> Self {
 		let oracle_setups = oracle_specs
@@ -262,11 +267,14 @@ where
 					self.transcript,
 				)?;
 
-			let (_bool_proof, bool_point, bool_final_claim) = verify_product_sumcheck_transcript(
-				HachiScalar::from_u64(0),
-				data.log_msg_len + 7,
-				self.transcript,
-			)?;
+			let bool_weight_point =
+				hachi_wire::verify_sample_hachi_scalar_vec(self.transcript, data.log_msg_len + 7);
+			let (_bool_proof, bool_point, bool_final_claim) =
+				verify_weighted_booleanity_sumcheck_transcript(
+					HachiScalar::from_u64(0),
+					data.log_msg_len + 7,
+					self.transcript,
+				)?;
 
 			let selected_openings = [hachi_wire::read_hachi::<HachiScalar, _>(
 				self.transcript,
@@ -287,7 +295,10 @@ where
 			if selected_expected != selected_final_claim {
 				return Err(Error::ProofEmpty);
 			}
-			let bool_expected = bool_openings[0] * (bool_openings[0] - HachiScalar::from_u64(1));
+			let bool_weight =
+				evaluate_hachi_eq(&bool_weight_point, &bool_point).ok_or(Error::ProofEmpty)?;
+			let bool_expected =
+				bool_weight * bool_openings[0] * (bool_openings[0] - HachiScalar::from_u64(1));
 			if bool_expected != bool_final_claim {
 				return Err(Error::ProofEmpty);
 			}

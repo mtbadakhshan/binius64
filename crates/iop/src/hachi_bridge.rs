@@ -139,6 +139,39 @@ impl ProductSumcheckProof {
 	}
 }
 
+/// Degree-3 sumcheck proof for weighted Booleanity.
+///
+/// This proves claims of the form `sum_x eq(rho, x) * B(x) * (B(x) - 1) = claim`.
+/// The final equality must be discharged by opening `B` at the verifier challenges and
+/// checking `claim_final = eq(rho, r) * B(r) * (B(r) - 1)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeightedBooleanitySumcheckProof {
+	/// Each round stores `q(0), q(1), q(2), q(3)` for the cubic round polynomial.
+	pub round_evals: Vec<[HachiScalar; 4]>,
+}
+
+impl WeightedBooleanitySumcheckProof {
+	/// Verify sumcheck round consistency and return the final claim.
+	pub fn verify_rounds(
+		&self,
+		initial_claim: HachiScalar,
+		challenges: &[HachiScalar],
+	) -> Result<HachiScalar, BatchedParityBridgeError> {
+		if self.round_evals.len() != challenges.len() {
+			return Err(BatchedParityBridgeError::InvalidSumcheck);
+		}
+
+		let mut claim = initial_claim;
+		for (&round, &challenge) in self.round_evals.iter().zip(challenges) {
+			if round[0] + round[1] != claim {
+				return Err(BatchedParityBridgeError::InvalidSumcheck);
+			}
+			claim = evaluate_cubic_from_0_1_2_3(round, challenge);
+		}
+		Ok(claim)
+	}
+}
+
 /// Prove a product-sumcheck for multilinears with equal power-of-two lengths.
 pub fn prove_product_sumcheck(
 	lefts: &[Vec<HachiScalar>],
@@ -308,6 +341,32 @@ pub fn booleanity_table_sumcheck_inputs(
 	)
 }
 
+/// Prove randomly weighted Booleanity for one bit-table polynomial.
+pub fn prove_weighted_booleanity_sumcheck(
+	bit_table: &[HachiScalar],
+	weight_point: &[HachiScalar],
+	challenges: &[HachiScalar],
+) -> Result<(HachiScalar, WeightedBooleanitySumcheckProof, HachiScalar), BatchedParityBridgeError> {
+	validate_weighted_booleanity_inputs(bit_table, weight_point)?;
+	if challenges.len() != weight_point.len() {
+		return Err(BatchedParityBridgeError::InvalidSumcheck);
+	}
+
+	let mut bits = bit_table.to_vec();
+	let mut weights = multilinear_eq_evals(weight_point);
+	let initial_claim = weighted_booleanity_sum(&bits, &weights);
+	let mut round_evals = Vec::with_capacity(challenges.len());
+
+	for &challenge in challenges {
+		let round = weighted_booleanity_round_evals(&bits, &weights);
+		round_evals.push(round);
+		fold_evals(&mut bits, challenge);
+		fold_evals(&mut weights, challenge);
+	}
+
+	Ok((initial_claim, WeightedBooleanitySumcheckProof { round_evals }, bits[0]))
+}
+
 /// Prove a product sumcheck with Fiat-Shamir challenges from the Binius transcript.
 pub fn prove_product_sumcheck_transcript<Challenger_>(
 	lefts: &[Vec<HachiScalar>],
@@ -386,6 +445,77 @@ where
 		challenges.push(challenge);
 	}
 	Ok((ProductSumcheckProof { round_evals }, challenges, claim))
+}
+
+/// Prove weighted Booleanity with Fiat-Shamir challenges from the Binius transcript.
+pub fn prove_weighted_booleanity_sumcheck_transcript<Challenger_>(
+	bit_table: &[HachiScalar],
+	weight_point: &[HachiScalar],
+	transcript: &mut ProverTranscript<Challenger_>,
+) -> Result<
+	(HachiScalar, WeightedBooleanitySumcheckProof, Vec<HachiScalar>, HachiScalar),
+	BatchedParityBridgeError,
+>
+where
+	Challenger_: Challenger,
+{
+	validate_weighted_booleanity_inputs(bit_table, weight_point)?;
+	let mut bits = bit_table.to_vec();
+	let mut weights = multilinear_eq_evals(weight_point);
+	let initial_claim = weighted_booleanity_sum(&bits, &weights);
+	hachi_wire::write_hachi(transcript, &initial_claim);
+
+	let log_len = bit_table.len().trailing_zeros() as usize;
+	let mut round_evals = Vec::with_capacity(log_len);
+	let mut challenges = Vec::with_capacity(log_len);
+	for _ in 0..log_len {
+		let round = weighted_booleanity_round_evals(&bits, &weights);
+		for value in &round {
+			hachi_wire::write_hachi(transcript, value);
+		}
+		let challenge = hachi_wire::sample_hachi_scalar(transcript);
+		challenges.push(challenge);
+		fold_evals(&mut bits, challenge);
+		fold_evals(&mut weights, challenge);
+		round_evals.push(round);
+	}
+
+	Ok((initial_claim, WeightedBooleanitySumcheckProof { round_evals }, challenges, bits[0]))
+}
+
+/// Verify weighted Booleanity from a Binius transcript and return challenges plus final claim.
+pub fn verify_weighted_booleanity_sumcheck_transcript<Challenger_>(
+	expected_initial_claim: HachiScalar,
+	num_rounds: usize,
+	transcript: &mut VerifierTranscript<Challenger_>,
+) -> Result<(WeightedBooleanitySumcheckProof, Vec<HachiScalar>, HachiScalar), Error>
+where
+	Challenger_: Challenger,
+{
+	let initial_claim = hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?;
+	if initial_claim != expected_initial_claim {
+		return Err(Error::ProofEmpty);
+	}
+
+	let mut claim = initial_claim;
+	let mut round_evals = Vec::with_capacity(num_rounds);
+	let mut challenges = Vec::with_capacity(num_rounds);
+	for _ in 0..num_rounds {
+		let round = [
+			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
+			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
+			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
+			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
+		];
+		if round[0] + round[1] != claim {
+			return Err(Error::ProofEmpty);
+		}
+		let challenge = hachi_wire::verify_sample_hachi_scalar(transcript);
+		claim = evaluate_cubic_from_0_1_2_3(round, challenge);
+		round_evals.push(round);
+		challenges.push(challenge);
+	}
+	Ok((WeightedBooleanitySumcheckProof { round_evals }, challenges, claim))
 }
 
 /// Canonical `u128` lift from the Binius binary field to Hachi's prime field.
@@ -624,12 +754,68 @@ fn multilinear_eq_evals(point: &[HachiScalar]) -> Vec<HachiScalar> {
 	evals
 }
 
+/// Evaluate the multilinear equality polynomial `eq(left, right)`.
+pub fn evaluate_hachi_eq(left: &[HachiScalar], right: &[HachiScalar]) -> Option<HachiScalar> {
+	if left.len() != right.len() {
+		return None;
+	}
+	let one = HachiScalar::from_u64(1);
+	Some(
+		left.iter()
+			.zip(right)
+			.fold(one, |acc, (&left, &right)| acc * ((one - left) * (one - right) + left * right)),
+	)
+}
+
 fn product_sum(lefts: &[Vec<HachiScalar>], rights: &[Vec<HachiScalar>]) -> HachiScalar {
 	lefts
 		.iter()
 		.zip(rights)
 		.flat_map(|(left, right)| left.iter().zip(right))
 		.fold(HachiScalar::from_u64(0), |acc, (&left, &right)| acc + left * right)
+}
+
+fn validate_weighted_booleanity_inputs(
+	bit_table: &[HachiScalar],
+	weight_point: &[HachiScalar],
+) -> Result<(), BatchedParityBridgeError> {
+	if bit_table.is_empty() || !bit_table.len().is_power_of_two() {
+		return Err(BatchedParityBridgeError::InvalidSumcheck);
+	}
+	if bit_table.len().trailing_zeros() as usize != weight_point.len() {
+		return Err(BatchedParityBridgeError::InvalidSumcheck);
+	}
+	Ok(())
+}
+
+fn weighted_booleanity_sum(bits: &[HachiScalar], weights: &[HachiScalar]) -> HachiScalar {
+	debug_assert_eq!(bits.len(), weights.len());
+	let one = HachiScalar::from_u64(1);
+	bits.iter()
+		.zip(weights)
+		.fold(HachiScalar::from_u64(0), |acc, (&bit, &weight)| acc + weight * bit * (bit - one))
+}
+
+fn weighted_booleanity_round_evals(
+	bits: &[HachiScalar],
+	weights: &[HachiScalar],
+) -> [HachiScalar; 4] {
+	debug_assert_eq!(bits.len(), weights.len());
+	let one = HachiScalar::from_u64(1);
+	let mut evals = [HachiScalar::from_u64(0); 4];
+	for (bit_pair, weight_pair) in bits.chunks_exact(2).zip(weights.chunks_exact(2)) {
+		let bit0 = bit_pair[0];
+		let bit_delta = bit_pair[1] - bit0;
+		let weight0 = weight_pair[0];
+		let weight_delta = weight_pair[1] - weight0;
+		for (t, eval) in evals.iter_mut().enumerate() {
+			let t = HachiScalar::from_u64(t as u64);
+			let bit_t = bit0 + t * bit_delta;
+			let weight_t = weight0 + t * weight_delta;
+			*eval += weight_t * bit_t * (bit_t - one);
+		}
+	}
+	evals
 }
 
 fn product_round_evals(
@@ -671,6 +857,28 @@ fn evaluate_quadratic_from_0_1_2(evals: [HachiScalar; 3], x: HachiScalar) -> Hac
 	let c2 = (evals[2] - two * evals[1] + evals[0]) * inv_two;
 	let c1 = evals[1] - c0 - c2;
 	c0 + c1 * x + c2 * x * x
+}
+
+fn evaluate_cubic_from_0_1_2_3(evals: [HachiScalar; 4], x: HachiScalar) -> HachiScalar {
+	let one = HachiScalar::from_u64(1);
+	let two = HachiScalar::from_u64(2);
+	let three = HachiScalar::from_u64(3);
+	let six = HachiScalar::from_u64(6);
+	let inv_two = two
+		.inv()
+		.expect("2 is invertible in Hachi's odd prime field");
+	let inv_six = six
+		.inv()
+		.expect("6 is invertible in Hachi's odd prime field");
+
+	let x_minus_one = x - one;
+	let x_minus_two = x - two;
+	let x_minus_three = x - three;
+	let l0 = HachiScalar::from_u64(0) - x_minus_one * x_minus_two * x_minus_three * inv_six;
+	let l1 = x * x_minus_two * x_minus_three * inv_two;
+	let l2 = HachiScalar::from_u64(0) - x * x_minus_one * x_minus_three * inv_two;
+	let l3 = x * x_minus_one * x_minus_two * inv_six;
+	evals[0] * l0 + evals[1] * l1 + evals[2] * l2 + evals[3] * l3
 }
 
 /// Why the current Hachi adapter cannot yet be wired as a strict PCS backend.
@@ -965,6 +1173,52 @@ mod tests {
 		assert_eq!(
 			bool_proof.verify_rounds(bool_claim, &challenges).unwrap(),
 			bool_left[0] * bool_right[0]
+		);
+
+		let weight_point = (0..10)
+			.map(|i| HachiScalar::from_u64(101 + i as u64))
+			.collect::<Vec<_>>();
+		let (weighted_claim, weighted_proof, bool_opening) =
+			prove_weighted_booleanity_sumcheck(&bit_table, &weight_point, &challenges).unwrap();
+		assert_eq!(weighted_claim, HachiScalar::from_u64(0));
+		let weighted_final = weighted_proof
+			.verify_rounds(weighted_claim, &challenges)
+			.unwrap();
+		let final_weight = evaluate_hachi_eq(&weight_point, &challenges).unwrap();
+		assert_eq!(
+			weighted_final,
+			final_weight * bool_opening * (bool_opening - HachiScalar::from_u64(1))
+		);
+	}
+
+	#[test]
+	fn weighted_booleanity_rejects_cancelling_non_boolean_table() {
+		let inv_five = HachiScalar::from_u64(5)
+			.inv()
+			.expect("5 is invertible in Hachi's field");
+		let bit_table = vec![
+			HachiScalar::from_u64(2) * inv_five,
+			HachiScalar::from_u64(0) - inv_five,
+		];
+
+		let (lefts, rights) = booleanity_table_sumcheck_inputs(&bit_table);
+		let (unweighted_claim, _, _, _) =
+			prove_product_sumcheck(&lefts, &rights, &[HachiScalar::from_u64(7)]).unwrap();
+		assert_eq!(unweighted_claim, HachiScalar::from_u64(0));
+
+		let weight_point = [HachiScalar::from_u64(3)];
+		let (weighted_claim, weighted_proof, bool_opening) = prove_weighted_booleanity_sumcheck(
+			&bit_table,
+			&weight_point,
+			&[HachiScalar::from_u64(7)],
+		)
+		.unwrap();
+		assert_ne!(weighted_claim, HachiScalar::from_u64(0));
+		assert_eq!(
+			weighted_proof.verify_rounds(weighted_claim, &[HachiScalar::from_u64(7)]),
+			Ok(evaluate_hachi_eq(&weight_point, &[HachiScalar::from_u64(7)]).unwrap()
+				* bool_opening
+				* (bool_opening - HachiScalar::from_u64(1)))
 		);
 	}
 

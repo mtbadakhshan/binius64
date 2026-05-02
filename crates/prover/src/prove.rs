@@ -53,6 +53,12 @@ use crate::{
 	ring_switch,
 };
 
+const PROOF_MODE_BASEFOLD: &[u8] = b"binius64-proof-mode:basefold:v1";
+#[cfg(feature = "hachi")]
+const PROOF_MODE_HACHI_FULL_OPEN: &[u8] = b"binius64-proof-mode:hachi-full-open:v1";
+#[cfg(feature = "hachi")]
+const PROOF_MODE_HACHI_SUCCINCT: &[u8] = b"binius64-proof-mode:hachi-succinct:v1";
+
 /// Type alias for the prover NTT parameterized by field.
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
 
@@ -300,7 +306,7 @@ where
 		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
 	>,
 	#[cfg(feature = "hachi")]
-	hachi_succinct_setup: Arc<HachiSuccinctSetup>,
+	hachi_succinct_setup: Option<Arc<HachiSuccinctSetup>>,
 }
 
 impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
@@ -382,6 +388,7 @@ where
 		witness: ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		transcript.message().write_bytes(PROOF_MODE_BASEFOLD);
 		// Create channel and delegate to IOPProver::prove
 		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
 		self.iop_prover.prove::<P, _>(witness, channel)
@@ -399,6 +406,7 @@ where
 		witness: ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		transcript.message().write_bytes(PROOF_MODE_HACHI_FULL_OPEN);
 		let channel = HachiFullOpenProverChannel::new(
 			transcript,
 			self.basefold_compiler.oracle_specs().to_vec(),
@@ -413,10 +421,18 @@ where
 		witness: ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		transcript.message().write_bytes(PROOF_MODE_HACHI_SUCCINCT);
+		let hachi_succinct_setup =
+			self.hachi_succinct_setup
+				.as_deref()
+				.ok_or_else(|| Error::ArgumentError {
+					arg: "hachi-succinct".to_string(),
+					msg: "requires witness oracles with at least 7 variables".to_string(),
+				})?;
 		let channel = HachiSuccinctProverChannel::new(
 			transcript,
 			self.basefold_compiler.oracle_specs().to_vec(),
-			&self.hachi_succinct_setup,
+			hachi_succinct_setup,
 		);
 		self.iop_prover.prove::<P, _>(witness, channel)
 	}

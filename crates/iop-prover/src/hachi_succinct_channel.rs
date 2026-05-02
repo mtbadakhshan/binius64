@@ -7,8 +7,9 @@ use binius_iop::{
 	channel::OracleSpec,
 	hachi_bridge::{
 		BINIUS_SCALAR_BITS, BatchedParityBridgeProof, BiniusScalar, BitSliceOracle, HachiScalar,
-		batched_selected_sum_table_mask, batched_u64_sum, booleanity_table_sumcheck_inputs,
-		parity_sum_bounds, prove_product_sumcheck_transcript, prove_terminal_linear_claim,
+		batched_selected_sum_table_mask, batched_u64_sum, parity_sum_bounds,
+		prove_product_sumcheck_transcript, prove_terminal_linear_claim,
+		prove_weighted_booleanity_sumcheck_transcript,
 	},
 	hachi_succinct_channel::{
 		HachiSuccinctProverSetup, HachiSuccinctSetup, pack_bounded_u64_array,
@@ -137,6 +138,9 @@ where
 		assert_eq!(spec.log_msg_len, oracle_setup.log_msg_len());
 		let bit_slices = BitSliceOracle::from_binius_oracle(&oracle_values);
 		let bit_table = bit_slices.to_bit_table_evals();
+		// OneHotPoly is only the honest-prover representation used to speed up Hachi
+		// operations. The verifier-side Booleanity guarantee is the weighted
+		// sumcheck in prove_oracle_relations/verify_oracle_relations.
 		let poly = bit_slices
 			.to_onehot_bit_table_poly::<D>()
 			.expect("bit table one-hot encoding is valid");
@@ -191,18 +195,21 @@ where
 				.unwrap();
 			debug_assert_eq!(selected_claim, selected_initial);
 
-			let (bool_lefts, bool_rights) = booleanity_table_sumcheck_inputs(&data.bit_table);
-			let (bool_claim, _bool_proof, bool_point, bool_openings, _) =
-				prove_product_sumcheck_transcript(&bool_lefts, &bool_rights, self.transcript)
-					.unwrap();
+			let bool_weight_point =
+				hachi_wire::sample_hachi_scalar_vec(self.transcript, data.log_msg_len + 7);
+			let (bool_claim, _bool_proof, bool_point, bool_opening) =
+				prove_weighted_booleanity_sumcheck_transcript(
+					&data.bit_table,
+					&bool_weight_point,
+					self.transcript,
+				)
+				.unwrap();
 			debug_assert_eq!(bool_claim, HachiScalar::from_u64(0));
 
 			for value in &selected_openings {
 				hachi_wire::write_hachi(self.transcript, value);
 			}
-			for value in &bool_openings {
-				hachi_wire::write_hachi(self.transcript, value);
-			}
+			hachi_wire::write_hachi(self.transcript, &bool_opening);
 
 			let proof = prove_hachi_openings(
 				data,
