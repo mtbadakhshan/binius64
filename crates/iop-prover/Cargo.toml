@@ -20,6 +20,7 @@ bytes.workspace = true
 derive_more.workspace = true
 digest.workspace = true
 getset.workspace = true
+hachi-pcs = { path = "../../../lz-hachi", optional = true, default-features = false }
 itertools.workspace = true
 rand.workspace = true
 thiserror.workspace = true
@@ -34,4 +35,5 @@ sha2.workspace = true
 
 [features]
 default = ["rayon"]
+hachi = ["binius-iop/hachi", "dep:hachi-pcs"]
 rayon = ["binius-utils/rayon"]

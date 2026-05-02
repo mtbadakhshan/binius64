@@ -91,4 +91,5 @@ harness = false
 
 [features]
 default = ["rayon"]
+hachi = ["binius-iop/hachi", "binius-iop-prover/hachi", "binius-verifier/hachi"]
 rayon = ["binius-utils/rayon"]

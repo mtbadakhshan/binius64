@@ -7,7 +7,10 @@ use binius_frontend::{CircuitBuilder, CircuitStat};
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 
-use crate::{CompressionType, ExampleCircuit, prove_verify, setup_sha256, setup_vision4};
+use crate::{
+	CompressionType, ExampleCircuit, prove_verify, prove_verify_hachi_full_open,
+	prove_verify_hachi_succinct, setup_sha256, setup_vision4,
+};
 
 /// Serialize a value implementing `SerializeBytes` and write it to the given path.
 fn write_serialized<T: SerializeBytes>(value: &T, path: &str) -> Result<()> {
@@ -503,6 +506,16 @@ where
 				let (verifier, prover) = setup_vision4(cs, log_inv_rate as usize, None)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
+			CompressionType::HachiFullOpen => {
+				tracing::info!("Using Hachi full-opening bridge proof");
+				let (verifier, prover) = setup_sha256(cs, log_inv_rate as usize, None)?;
+				prove_verify_hachi_full_open(&verifier, &prover, witness)?;
+			}
+			CompressionType::HachiSuccinct => {
+				tracing::info!("Using succinct Hachi bridge proof");
+				let (verifier, prover) = setup_sha256(cs, log_inv_rate as usize, None)?;
+				prove_verify_hachi_succinct(&verifier, &prover, witness)?;
+			}
 		}
 
 		Ok(())
@@ -701,6 +714,18 @@ where
 				let (verifier, prover) =
 					setup_vision4(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, witness)?;
+			}
+			CompressionType::HachiFullOpen => {
+				tracing::info!("Using Hachi full-opening bridge proof");
+				let (verifier, prover) =
+					setup_sha256(cs, log_inv_rate as usize, maybe_key_collection)?;
+				prove_verify_hachi_full_open(&verifier, &prover, witness)?;
+			}
+			CompressionType::HachiSuccinct => {
+				tracing::info!("Using succinct Hachi bridge proof");
+				let (verifier, prover) =
+					setup_sha256(cs, log_inv_rate as usize, maybe_key_collection)?;
+				prove_verify_hachi_succinct(&verifier, &prover, witness)?;
 			}
 		};
 

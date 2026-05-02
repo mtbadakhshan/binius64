@@ -2,6 +2,10 @@
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
+#[cfg(feature = "hachi")]
+use binius_iop::hachi_full_open_channel::HachiFullOpenVerifierChannel;
+#[cfg(feature = "hachi")]
+use binius_iop::hachi_succinct_channel::{HachiSuccinctSetup, HachiSuccinctVerifierChannel};
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -20,6 +24,8 @@ use binius_utils::{
 };
 use digest::{Digest, Output, block_api::BlockSizeUser};
 use itertools::chain;
+#[cfg(feature = "hachi")]
+use std::sync::Arc;
 
 use super::error::Error;
 use crate::{
@@ -278,6 +284,8 @@ where
 	iop_verifier: IOPVerifier,
 	iop_compiler:
 		BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
+	#[cfg(feature = "hachi")]
+	hachi_succinct_setup: Arc<HachiSuccinctSetup>,
 }
 
 impl<MerkleHash, MerkleCompress> Verifier<MerkleHash, MerkleCompress>
@@ -323,10 +331,14 @@ where
 			n_test_queries,
 			&ConstantArityStrategy::new(fri_arity),
 		);
+		#[cfg(feature = "hachi")]
+		let hachi_succinct_setup = Arc::new(HachiSuccinctSetup::new(iop_compiler.oracle_specs()));
 
 		Ok(Self {
 			iop_verifier,
 			iop_compiler,
+			#[cfg(feature = "hachi")]
+			hachi_succinct_setup,
 		})
 	}
 
@@ -379,6 +391,12 @@ where
 		&self.iop_compiler
 	}
 
+	/// Returns the reusable setup for the succinct Hachi bridge channel.
+	#[cfg(feature = "hachi")]
+	pub fn hachi_succinct_setup(&self) -> Arc<HachiSuccinctSetup> {
+		Arc::clone(&self.hachi_succinct_setup)
+	}
+
 	pub fn verify<Challenger_: Challenger>(
 		&self,
 		public: &[Word],
@@ -386,6 +404,33 @@ where
 	) -> Result<(), Error> {
 		// Create channel and delegate to IOPVerifier::verify
 		let mut channel = self.iop_compiler.create_channel(transcript);
+		self.iop_verifier.verify(public, &mut channel)
+	}
+
+	/// Verifies a proof produced by the Hachi full-opening bridge channel.
+	#[cfg(feature = "hachi")]
+	pub fn verify_hachi_full_open<Challenger_: Challenger>(
+		&self,
+		public: &[Word],
+		transcript: &mut VerifierTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		let mut channel =
+			HachiFullOpenVerifierChannel::new(transcript, self.iop_compiler.oracle_specs());
+		self.iop_verifier.verify(public, &mut channel)
+	}
+
+	/// Verifies a proof produced by the succinct Hachi bridge channel.
+	#[cfg(feature = "hachi")]
+	pub fn verify_hachi_succinct<Challenger_: Challenger>(
+		&self,
+		public: &[Word],
+		transcript: &mut VerifierTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		let mut channel = HachiSuccinctVerifierChannel::new(
+			transcript,
+			self.iop_compiler.oracle_specs(),
+			&self.hachi_succinct_setup,
+		);
 		self.iop_verifier.verify(public, &mut channel)
 	}
 }

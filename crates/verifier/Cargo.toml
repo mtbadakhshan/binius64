@@ -26,6 +26,9 @@ itertools.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[features]
+hachi = ["binius-iop/hachi"]
+
 [dev-dependencies]
 binius-math = { path = "../math", features = ["test-utils"] }
 rand.workspace = true

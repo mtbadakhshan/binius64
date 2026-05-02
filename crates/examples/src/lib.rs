@@ -32,6 +32,10 @@ pub enum CompressionType {
 	Sha256,
 	/// Vision 4-element compression function
 	Vision4,
+	/// Hachi full-opening bridge proof system (experimental, non-succinct)
+	HachiFullOpen,
+	/// Succinct Hachi bridge proof system
+	HachiSuccinct,
 }
 
 /// Standard verifier using SHA256 compression
@@ -106,6 +110,94 @@ where
 	verifier_transcript.finalize()?;
 
 	Ok(())
+}
+
+/// Generate and verify a proof using the Hachi full-opening bridge channel.
+#[cfg(feature = "hachi")]
+pub fn prove_verify_hachi_full_open<D, C, ParD, ParC>(
+	verifier: &Verifier<D, C>,
+	prover: &Prover<OptimalPackedB128, ParC, ParD>,
+	witness: ValueVec,
+) -> Result<()>
+where
+	D: Digest + BlockSizeUser + FixedOutputReset,
+	C: PseudoCompressionFunction<Output<D>, 2>,
+	ParD: ParallelDigest<Digest = D>,
+	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+{
+	let challenger = StdChallenger::default();
+
+	let mut prover_transcript = ProverTranscript::new(challenger.clone());
+	prover.prove_hachi_full_open(witness.clone(), &mut prover_transcript)?;
+
+	let proof = prover_transcript.finalize();
+	tracing::info!("Hachi full-open proof size: {} KiB", proof.len() / 1024);
+
+	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
+	verifier.verify_hachi_full_open(witness.public(), &mut verifier_transcript)?;
+	verifier_transcript.finalize()?;
+
+	Ok(())
+}
+
+/// Generate and verify a proof using the succinct Hachi bridge channel.
+#[cfg(feature = "hachi")]
+pub fn prove_verify_hachi_succinct<D, C, ParD, ParC>(
+	verifier: &Verifier<D, C>,
+	prover: &Prover<OptimalPackedB128, ParC, ParD>,
+	witness: ValueVec,
+) -> Result<()>
+where
+	D: Digest + BlockSizeUser + FixedOutputReset,
+	C: PseudoCompressionFunction<Output<D>, 2>,
+	ParD: ParallelDigest<Digest = D>,
+	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+{
+	let challenger = StdChallenger::default();
+
+	let mut prover_transcript = ProverTranscript::new(challenger.clone());
+	prover.prove_hachi_succinct(witness.clone(), &mut prover_transcript)?;
+
+	let proof = prover_transcript.finalize();
+	tracing::info!("Hachi succinct proof size: {} KiB", proof.len() / 1024);
+
+	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
+	verifier.verify_hachi_succinct(witness.public(), &mut verifier_transcript)?;
+	verifier_transcript.finalize()?;
+
+	Ok(())
+}
+
+/// Stub for builds without the `hachi` feature.
+#[cfg(not(feature = "hachi"))]
+pub fn prove_verify_hachi_succinct<D, C, ParD, ParC>(
+	_verifier: &Verifier<D, C>,
+	_prover: &Prover<OptimalPackedB128, ParC, ParD>,
+	_witness: ValueVec,
+) -> Result<()>
+where
+	D: Digest + BlockSizeUser + FixedOutputReset,
+	C: PseudoCompressionFunction<Output<D>, 2>,
+	ParD: ParallelDigest<Digest = D>,
+	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+{
+	anyhow::bail!("hachi succinct proofs require building binius-examples with --features hachi")
+}
+
+/// Stub for builds without the `hachi` feature.
+#[cfg(not(feature = "hachi"))]
+pub fn prove_verify_hachi_full_open<D, C, ParD, ParC>(
+	_verifier: &Verifier<D, C>,
+	_prover: &Prover<OptimalPackedB128, ParC, ParD>,
+	_witness: ValueVec,
+) -> Result<()>
+where
+	D: Digest + BlockSizeUser + FixedOutputReset,
+	C: PseudoCompressionFunction<Output<D>, 2>,
+	ParD: ParallelDigest<Digest = D>,
+	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+{
+	anyhow::bail!("hachi full-open proofs require building binius-examples with --features hachi")
 }
 
 /// Trait for standardizing circuit examples in the Binius framework.

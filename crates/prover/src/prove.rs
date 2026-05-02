@@ -9,6 +9,12 @@ use binius_field::{
 	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
 	PackedField, UnderlierWithBitOps, WithUnderlier,
 };
+#[cfg(feature = "hachi")]
+use binius_iop::hachi_succinct_channel::HachiSuccinctSetup;
+#[cfg(feature = "hachi")]
+use binius_iop_prover::hachi_full_open_channel::HachiFullOpenProverChannel;
+#[cfg(feature = "hachi")]
+use binius_iop_prover::hachi_succinct_channel::HachiSuccinctProverChannel;
 use binius_iop_prover::{
 	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
@@ -30,6 +36,8 @@ use binius_verifier::{
 	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
 use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
+#[cfg(feature = "hachi")]
+use std::sync::Arc;
 
 use super::error::Error;
 use crate::{
@@ -291,6 +299,8 @@ where
 		ProverNTT<B128>,
 		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
 	>,
+	#[cfg(feature = "hachi")]
+	hachi_succinct_setup: Arc<HachiSuccinctSetup>,
 }
 
 impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
@@ -342,12 +352,16 @@ where
 			ntt,
 			merkle_prover,
 		);
+		#[cfg(feature = "hachi")]
+		let hachi_succinct_setup = verifier.hachi_succinct_setup();
 
 		let iop_prover = IOPProver::new(verifier.into_iop_verifier(), key_collection);
 
 		Ok(Prover {
 			iop_prover,
 			basefold_compiler,
+			#[cfg(feature = "hachi")]
+			hachi_succinct_setup,
 		})
 	}
 
@@ -370,6 +384,40 @@ where
 	) -> Result<(), Error> {
 		// Create channel and delegate to IOPProver::prove
 		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
+		self.iop_prover.prove::<P, _>(witness, channel)
+	}
+
+	/// Proves using the Hachi full-opening bridge channel.
+	///
+	/// This is a sound, non-succinct bridge path that reveals the terminal oracle
+	/// and verifies the batched parity bridge. It is intended as the first
+	/// end-to-end Hachi bridge target before replacing the full opening with a
+	/// succinct Hachi PCS opening/range proof.
+	#[cfg(feature = "hachi")]
+	pub fn prove_hachi_full_open<Challenger_: Challenger>(
+		&self,
+		witness: ValueVec,
+		transcript: &mut ProverTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		let channel = HachiFullOpenProverChannel::new(
+			transcript,
+			self.basefold_compiler.oracle_specs().to_vec(),
+		);
+		self.iop_prover.prove::<P, _>(witness, channel)
+	}
+
+	/// Proves using the succinct Hachi bridge channel.
+	#[cfg(feature = "hachi")]
+	pub fn prove_hachi_succinct<Challenger_: Challenger>(
+		&self,
+		witness: ValueVec,
+		transcript: &mut ProverTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		let channel = HachiSuccinctProverChannel::new(
+			transcript,
+			self.basefold_compiler.oracle_specs().to_vec(),
+			&self.hachi_succinct_setup,
+		);
 		self.iop_prover.prove::<P, _>(witness, channel)
 	}
 }

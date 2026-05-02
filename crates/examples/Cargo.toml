@@ -72,6 +72,7 @@ harness = false
 
 [features]
 default = ["rayon"]
+hachi = ["binius-prover/hachi", "binius-verifier/hachi"]
 perfetto = ["tracing-profile/perfetto"]
 rayon = ["binius-hash/rayon", "binius-prover/rayon"]
 

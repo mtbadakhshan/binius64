@@ -31,6 +31,14 @@ pub mod basefold_compiler;
 pub mod basefold_zk_channel;
 pub mod channel;
 pub mod fri;
+#[cfg(feature = "hachi")]
+pub mod hachi_bridge;
+#[cfg(feature = "hachi")]
+pub mod hachi_full_open_channel;
+#[cfg(feature = "hachi")]
+pub mod hachi_succinct_channel;
+#[cfg(feature = "hachi")]
+pub mod hachi_wire;
 pub mod merkle_tree;
 pub mod naive_channel;
 pub mod size_tracking_channel;
