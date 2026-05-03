@@ -24,6 +24,98 @@ pub type HachiScalar = fp128::Field;
 /// Number of Boolean coordinates in one Binius scalar.
 pub const BINIUS_SCALAR_BITS: usize = 128;
 
+/// Verifier-owned structured transparent relation for the Hachi succinct bridge.
+///
+/// Implementations must derive every value from public verifier state. The prover must not choose
+/// the results of these methods, because they replace full transparent-table scans in the bridge
+/// soundness checks.
+pub trait StructuredTransparentRelation {
+	/// Log2 of the number of Binius coefficients in the relation.
+	fn log_len(&self) -> usize;
+
+	/// Evaluates the Binius multilinear extension of the transparent relation.
+	fn eval_binius(&self, point: &[BiniusScalar])
+	-> Result<BiniusScalar, BatchedParityBridgeError>;
+
+	/// Public upper bounds for each selected-bit parity sum.
+	fn parity_sum_bounds(&self) -> Result<[u64; BINIUS_SCALAR_BITS], BatchedParityBridgeError>;
+
+	/// Evaluates the Hachi-field multilinear extension of the batched selected-bit mask.
+	fn eval_selected_mask(
+		&self,
+		alpha: HachiScalar,
+		point: &[HachiScalar],
+	) -> Result<HachiScalar, BatchedParityBridgeError>;
+}
+
+/// Structured relation for a constant transparent table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConstantTransparentRelation {
+	log_len: usize,
+	coefficient: BiniusScalar,
+}
+
+impl ConstantTransparentRelation {
+	/// Creates a relation with `2^log_len` copies of `coefficient`.
+	pub fn new(log_len: usize, coefficient: BiniusScalar) -> Self {
+		Self {
+			log_len,
+			coefficient,
+		}
+	}
+}
+
+impl StructuredTransparentRelation for ConstantTransparentRelation {
+	fn log_len(&self) -> usize {
+		self.log_len
+	}
+
+	fn eval_binius(
+		&self,
+		point: &[BiniusScalar],
+	) -> Result<BiniusScalar, BatchedParityBridgeError> {
+		if point.len() != self.log_len {
+			return Err(BatchedParityBridgeError::InvalidSumcheck);
+		}
+		Ok(self.coefficient)
+	}
+
+	fn parity_sum_bounds(&self) -> Result<[u64; BINIUS_SCALAR_BITS], BatchedParityBridgeError> {
+		if self.log_len >= u64::BITS as usize {
+			return Err(BatchedParityBridgeError::InvalidSumcheck);
+		}
+		let count = 1u64 << self.log_len;
+		let mut bounds = [0u64; BINIUS_SCALAR_BITS];
+		for input_bit in 0..BINIUS_SCALAR_BITS {
+			let basis = BiniusScalar::new(1u128 << input_bit);
+			add_output_bits_scaled(&mut bounds, self.coefficient * basis, count)?;
+		}
+		Ok(bounds)
+	}
+
+	fn eval_selected_mask(
+		&self,
+		alpha: HachiScalar,
+		point: &[HachiScalar],
+	) -> Result<HachiScalar, BatchedParityBridgeError> {
+		let expected_point_len = self
+			.log_len
+			.checked_add(7)
+			.ok_or(BatchedParityBridgeError::InvalidSumcheck)?;
+		if point.len() != expected_point_len {
+			return Err(BatchedParityBridgeError::InvalidSumcheck);
+		}
+
+		let alpha_powers = powers(alpha, BINIUS_SCALAR_BITS);
+		let bit_eq_evals = multilinear_eq_evals(&point[..7]);
+		let mut eval = HachiScalar::from_u64(0);
+		for (input_bit, &bit_eq) in bit_eq_evals.iter().enumerate() {
+			eval += bit_eq * selected_sum_mask_value(self.coefficient, input_bit, &alpha_powers);
+		}
+		Ok(eval)
+	}
+}
+
 /// Evaluations of the 128 bit-slice multilinears for one Binius oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitSliceOracle {
@@ -578,7 +670,16 @@ impl BatchedParityBridgeProof {
 		claim: BiniusScalar,
 	) -> Result<(), BatchedParityBridgeError> {
 		let bounds = parity_sum_bounds(transparent)?;
-		for (bit, (&sum, &bound)) in self.opened_sums.iter().zip(&bounds).enumerate() {
+		self.verify_with_bounds(&bounds, claim)
+	}
+
+	/// Verify the 128 parity equations against verifier-derived public bounds.
+	pub fn verify_with_bounds(
+		&self,
+		bounds: &[u64; BINIUS_SCALAR_BITS],
+		claim: BiniusScalar,
+	) -> Result<(), BatchedParityBridgeError> {
+		for (bit, (&sum, &bound)) in self.opened_sums.iter().zip(bounds).enumerate() {
 			if sum > bound {
 				return Err(BatchedParityBridgeError::SumOutOfRange { bit, sum, bound });
 			}
@@ -672,7 +773,7 @@ pub fn parity_sum_bounds(
 	for &coefficient in transparent {
 		for input_bit in 0..BINIUS_SCALAR_BITS {
 			let basis = BiniusScalar::new(1u128 << input_bit);
-			add_output_bits(&mut bounds, coefficient * basis)?;
+			add_output_bits_scaled(&mut bounds, coefficient * basis, 1)?;
 		}
 	}
 	Ok(bounds)
@@ -699,11 +800,19 @@ fn add_output_bits(
 	accumulator: &mut [u64; BINIUS_SCALAR_BITS],
 	value: BiniusScalar,
 ) -> Result<(), BatchedParityBridgeError> {
+	add_output_bits_scaled(accumulator, value, 1)
+}
+
+fn add_output_bits_scaled(
+	accumulator: &mut [u64; BINIUS_SCALAR_BITS],
+	value: BiniusScalar,
+	count: u64,
+) -> Result<(), BatchedParityBridgeError> {
 	let mut output_bits = value.val();
 	while output_bits != 0 {
 		let output_bit = output_bits.trailing_zeros() as usize;
 		accumulator[output_bit] = accumulator[output_bit]
-			.checked_add(1)
+			.checked_add(count)
 			.ok_or(BatchedParityBridgeError::BoundOverflow { bit: output_bit })?;
 		output_bits &= output_bits - 1;
 	}
@@ -1241,5 +1350,47 @@ mod tests {
 		let actual = evaluate_batched_selected_sum_table_mask(&transparent, alpha, &point).unwrap();
 
 		assert_eq!(actual, expected);
+	}
+
+	#[test]
+	fn constant_structured_relation_matches_materialized_checks() {
+		use binius_math::{FieldBuffer, multilinear::evaluate::evaluate_inplace};
+		use hachi_pcs::algebra::poly::multilinear_eval;
+
+		let log_len = 4;
+		let coefficient = BiniusScalar::new(0x0101_0203_0508_0d15_2237_5990_e979_62db);
+		let relation = ConstantTransparentRelation::new(log_len, coefficient);
+		let transparent = vec![coefficient; 1 << log_len];
+
+		let binius_point = (0..log_len)
+			.map(|i| BiniusScalar::new(3 + i as u128))
+			.collect::<Vec<_>>();
+		let materialized_eval =
+			evaluate_inplace(FieldBuffer::<BiniusScalar>::from_values(&transparent), &binius_point);
+		assert_eq!(relation.eval_binius(&binius_point), Ok(materialized_eval));
+
+		assert_eq!(relation.parity_sum_bounds(), parity_sum_bounds(&transparent));
+
+		let alpha = HachiScalar::from_u64(43);
+		let hachi_point = (0..log_len + 7)
+			.map(|i| HachiScalar::from_u64(47 + i as u64))
+			.collect::<Vec<_>>();
+		let selected_mask = batched_selected_sum_table_mask(&transparent, alpha);
+		let materialized_mask_eval = multilinear_eval(&selected_mask, &hachi_point).unwrap();
+		assert_eq!(relation.eval_selected_mask(alpha, &hachi_point), Ok(materialized_mask_eval));
+	}
+
+	#[test]
+	fn constant_structured_relation_rejects_wrong_point_lengths() {
+		let relation = ConstantTransparentRelation::new(3, BiniusScalar::new(7));
+
+		assert_eq!(
+			relation.eval_binius(&[BiniusScalar::new(1), BiniusScalar::new(2)]),
+			Err(BatchedParityBridgeError::InvalidSumcheck)
+		);
+		assert_eq!(
+			relation.eval_selected_mask(HachiScalar::from_u64(5), &[HachiScalar::from_u64(1)]),
+			Err(BatchedParityBridgeError::InvalidSumcheck)
+		);
 	}
 }

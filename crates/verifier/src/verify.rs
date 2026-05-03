@@ -266,11 +266,11 @@ impl IOPVerifier {
 		});
 
 		// Verify oracle relations (runs BaseFold internally and verifies the product check)
-		channel.verify_oracle_relations([OracleLinearRelation {
-			oracle: trace_oracle,
+		channel.verify_oracle_relations([OracleLinearRelation::new(
+			trace_oracle,
 			transparent,
-			claim: batched_claim,
-		}])?;
+			batched_claim,
+		)])?;
 
 		drop(pcs_guard);
 

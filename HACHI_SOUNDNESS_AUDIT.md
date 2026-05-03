@@ -309,6 +309,30 @@ The Hachi one-hot selector coordinate is prepended with value `1`, consistently 
 
 The Hachi verifier path absorbs batch shape, commitments, opening points, and opening values before deriving its internal batching challenges. This part looks sound assuming the Hachi PCS itself is binding for the committed field polynomial.
 
+### Structured Transparent Relation Path Is Verifier-Owned
+
+Status: partially implemented.
+
+The `hachi-succinct` verifier can now take an optional structured transparent relation alongside the legacy transparent MLE closure. In the structured path, the verifier derives parity-sum bounds, selected-mask evaluation, and transparent MLE evaluation from verifier-owned code rather than from prover advice. The verifier also samples a final Binius point and checks the legacy transparent closure against the structured `eval_binius` result.
+
+This is sound for implemented structured relations whose helper methods exactly match the materialized coefficient table. The current implementation includes a constant-coefficient relation and tests it against full materialization for:
+
+- `eval_binius(point)`,
+- `parity_sum_bounds()`,
+- `eval_selected_mask(alpha, point)`.
+
+It also includes a Hachi succinct negative test where an honest proof for one constant relation is verified against a different structured relation and is rejected.
+
+The production terminal transparent relation remains on the legacy materialized fallback. Its coefficients are the ring-switch equality indicator plus a public-input equality patch. Although that relation's Binius MLE is sublinearly evaluable, the Hachi selected-mask table is a per-index nonlinear bit functional of each coefficient. No exact sublinear selected-mask evaluator has been implemented for that production relation.
+
+Required next work before enabling the production structured path:
+
+- derive and test an exact selected-mask evaluator for the ring-switch/public-input relation, or
+- commit to an auxiliary selected-mask polynomial and prove it is tied to the public relation, or
+- redesign the bridge so the selected-mask check is linear over verifier-evaluable public data.
+
+Until then, using any shortcut for the production selected-mask value would be unsound. The legacy materialized path is intentionally preserved as the safe fallback.
+
 ## Remediation Summary
 
 1. Fixed succinct Booleanity with a randomly weighted degree-3 Booleanity sumcheck.
@@ -317,10 +341,11 @@ The Hachi verifier path absorbs batch shape, commitments, opening points, and op
 4. Added top-level proof mode tags and mode-mismatch tests.
 5. Made Hachi succinct setup optional/fallible for unsupported small circuits.
 6. Replaced modulo-reduced Hachi challenge sampling with rejection sampling.
+7. Added a verifier-owned structured transparent relation path for exact sublinear helper evaluation, currently implemented and tested for constant coefficient tables.
 
 ## Final Assessment
 
 `hachi-full-open`: no confirmed soundness issue found.
 
-`hachi-succinct`: the confirmed critical Booleanity gap has been fixed. The selected-sum and bounded-parity bridge now has an explicit verifier-checked Booleanity argument for the committed table. The remaining soundness assumption is that the Hachi PCS is binding for the committed field polynomial and the stated openings.
+`hachi-succinct`: the confirmed critical Booleanity gap has been fixed. The selected-sum and bounded-parity bridge now has an explicit verifier-checked Booleanity argument for the committed table. The structured transparent relation path is sound for implemented exact relation types, but the production ring-switch relation still uses the legacy materialized transparent table. The remaining soundness assumption is that the Hachi PCS is binding for the committed field polynomial and the stated openings.
 

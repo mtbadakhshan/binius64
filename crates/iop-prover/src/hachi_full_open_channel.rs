@@ -202,13 +202,11 @@ mod tests {
 			HachiFullOpenVerifierChannel::<B128, _>::new(&mut verifier_transcript, &oracle_specs);
 		let oracle = verifier_channel.recv_oracle().unwrap();
 		verifier_channel
-			.verify_oracle_relations([OracleLinearRelation {
+			.verify_oracle_relations([OracleLinearRelation::new(
 				oracle,
-				transparent: Box::new(move |query| {
-					binius_math::multilinear::eq::eq_ind(&point, query)
-				}),
+				Box::new(move |query| binius_math::multilinear::eq::eq_ind(&point, query)),
 				claim,
-			}])
+			)])
 			.unwrap();
 		verifier_transcript.finalize().unwrap();
 	}

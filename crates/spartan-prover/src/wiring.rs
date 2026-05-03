@@ -525,11 +525,11 @@ mod tests {
 
 		// Finish verification.
 		verifier_channel
-			.verify_oracle_relations([OracleLinearRelation {
-				oracle: witness_oracle,
+			.verify_oracle_relations([OracleLinearRelation::new(
+				witness_oracle,
 				transparent,
-				claim: verifier_trace_claim,
-			}])
+				verifier_trace_claim,
+			)])
 			.expect("verify_oracle_relations should succeed (inner product verified)");
 	}
 }

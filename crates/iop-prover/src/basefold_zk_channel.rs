@@ -377,14 +377,14 @@ mod tests {
 		let v_oracle = verifier_channel.recv_oracle().unwrap();
 
 		verifier_channel
-			.verify_oracle_relations([OracleLinearRelation {
-				oracle: v_oracle,
-				transparent: Box::new(move |point: &[F]| {
+			.verify_oracle_relations([OracleLinearRelation::new(
+				v_oracle,
+				Box::new(move |point: &[F]| {
 					let eq = eq_ind_partial_eval::<P>(point);
 					inner_product_buffers(&transparent_poly, &eq)
 				}),
-				claim: eval_claim,
-			}])
+				eval_claim,
+			)])
 			.unwrap();
 	}
 
@@ -454,22 +454,22 @@ mod tests {
 
 		verifier_channel
 			.verify_oracle_relations([
-				OracleLinearRelation {
-					oracle: v_oracle_1,
-					transparent: Box::new(move |point: &[F]| {
+				OracleLinearRelation::new(
+					v_oracle_1,
+					Box::new(move |point: &[F]| {
 						let eq = eq_ind_partial_eval::<P>(point);
 						inner_product_buffers(&tp1, &eq)
 					}),
-					claim: eval_claim_1,
-				},
-				OracleLinearRelation {
-					oracle: v_oracle_2,
-					transparent: Box::new(move |point: &[F]| {
+					eval_claim_1,
+				),
+				OracleLinearRelation::new(
+					v_oracle_2,
+					Box::new(move |point: &[F]| {
 						let eq = eq_ind_partial_eval::<P>(point);
 						inner_product_buffers(&tp2, &eq)
 					}),
-					claim: eval_claim_2,
-				},
+					eval_claim_2,
+				),
 			])
 			.unwrap();
 	}

@@ -59,8 +59,42 @@ pub struct OracleLinearRelation<'a, Oracle, Elem> {
 	/// The closure receives the challenge point (sampled during `verify_oracle_relations`) and
 	/// returns the evaluation of the transparent polynomial's MLE at that point.
 	pub transparent: TransparentEvalFn<'a, Elem>,
+	/// Optional verifier-owned structured relation for the Hachi succinct bridge.
+	///
+	/// When present, the Hachi succinct verifier uses this object to derive parity bounds,
+	/// selected-bit mask evaluations, and transparent MLE evaluations without materializing the
+	/// full transparent table. The legacy closure above remains the canonical relation for generic
+	/// IOP channels and is consistency-checked against this object by the Hachi verifier.
+	#[cfg(feature = "hachi")]
+	pub hachi_structured_transparent:
+		Option<Box<dyn hachi_bridge::StructuredTransparentRelation + 'a>>,
 	/// The claimed inner product of the oracle polynomial and the transparent polynomial.
 	pub claim: Elem,
+}
+
+impl<'a, Oracle, Elem> OracleLinearRelation<'a, Oracle, Elem> {
+	/// Creates an oracle linear relation using the legacy transparent evaluator.
+	pub fn new(oracle: Oracle, transparent: TransparentEvalFn<'a, Elem>, claim: Elem) -> Self {
+		Self {
+			oracle,
+			transparent,
+			#[cfg(feature = "hachi")]
+			hachi_structured_transparent: None,
+			claim,
+		}
+	}
+}
+
+#[cfg(feature = "hachi")]
+impl<'a, Oracle> OracleLinearRelation<'a, Oracle, hachi_bridge::BiniusScalar> {
+	/// Attaches a verifier-owned structured relation for Hachi succinct verification.
+	pub fn with_hachi_structured_transparent(
+		mut self,
+		relation: impl hachi_bridge::StructuredTransparentRelation + 'a,
+	) -> Self {
+		self.hachi_structured_transparent = Some(Box::new(relation));
+		self
+	}
 }
 
 /// Channel for IOP verifiers that extends the IP verifier channel with oracle operations.

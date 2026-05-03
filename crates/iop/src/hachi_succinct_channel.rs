@@ -249,15 +249,32 @@ where
 		for relation in oracle_relations {
 			let data = &self.oracles[relation.oracle.index];
 			let oracle_setup = self.hachi_setup.oracle_setup(relation.oracle.index);
-			let transparent_values =
-				transparent_values_from_closure(&relation.transparent, data.log_msg_len);
+			let structured = relation.hachi_structured_transparent.as_deref();
+			if let Some(structured) = structured {
+				if structured.log_len() != data.log_msg_len {
+					return Err(Error::HachiBridge(
+						crate::hachi_bridge::BatchedParityBridgeError::InvalidSumcheck,
+					));
+				}
+			}
+			let transparent_values = structured
+				.is_none()
+				.then(|| transparent_values_from_closure(&relation.transparent, data.log_msg_len));
 
-			let sum_bounds = parity_sum_bounds(&transparent_values)?;
+			let sum_bounds = if let Some(structured) = structured {
+				structured.parity_sum_bounds()?
+			} else {
+				parity_sum_bounds(
+					transparent_values
+						.as_ref()
+						.expect("legacy path materializes transparent values"),
+				)?
+			};
 			let opened_sums = read_bounded_u64_array(self.transcript, &sum_bounds)?;
 			let parity = BatchedParityBridgeProof { opened_sums };
 
 			let alpha = hachi_wire::verify_sample_hachi_scalar(self.transcript);
-			parity.verify(&transparent_values, relation.claim)?;
+			parity.verify_with_bounds(&sum_bounds, relation.claim)?;
 
 			let selected_initial = batched_u64_sum(&parity.opened_sums, alpha);
 			let (_selected_proof, selected_point, selected_final_claim) =
@@ -285,12 +302,17 @@ where
 				&(),
 			)?];
 
-			let final_mask_value = evaluate_batched_selected_sum_table_mask(
-				&transparent_values,
-				alpha,
-				&selected_point,
-			)
-			.map_err(|_| Error::ProofEmpty)?;
+			let final_mask_value = if let Some(structured) = structured {
+				structured.eval_selected_mask(alpha, &selected_point)?
+			} else {
+				evaluate_batched_selected_sum_table_mask(
+					transparent_values
+						.as_ref()
+						.expect("legacy path materializes transparent values"),
+					alpha,
+					&selected_point,
+				)?
+			};
 			let selected_expected = selected_openings[0] * final_mask_value;
 			if selected_expected != selected_final_claim {
 				return Err(Error::ProofEmpty);
@@ -321,8 +343,15 @@ where
 			let point: Vec<Self::Elem> =
 				CanSample::sample_vec(&mut self.transcript, data.log_msg_len);
 			let transparent_eval = (relation.transparent)(&point);
-			let transparent_poly = FieldBuffer::<BiniusScalar>::from_values(&transparent_values);
-			let explicit_eval = evaluate_inplace(transparent_poly, &point);
+			let explicit_eval = if let Some(structured) = structured {
+				structured.eval_binius(&point)?
+			} else {
+				let transparent_values =
+					transparent_values.expect("legacy path materializes transparent values");
+				let transparent_poly =
+					FieldBuffer::<BiniusScalar>::from_values(&transparent_values);
+				evaluate_inplace(transparent_poly, &point)
+			};
 			self.assert_zero(transparent_eval - explicit_eval)?;
 		}
 		Ok(())

@@ -284,3 +284,114 @@ fn prove_hachi_openings(
 	)
 	.expect("Hachi batched opening proof should succeed")
 }
+
+#[cfg(test)]
+mod tests {
+	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash1x128b};
+	use binius_hash::StdDigest;
+	use binius_iop::{
+		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+		hachi_bridge::ConstantTransparentRelation,
+		hachi_succinct_channel::HachiSuccinctVerifierChannel,
+	};
+	use binius_math::{
+		FieldBuffer, inner_product::inner_product_buffers, test_utils::random_field_buffer,
+	};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use rand::{SeedableRng, rngs::StdRng};
+
+	use super::*;
+
+	type StdChallenger = HasherChallenger<StdDigest>;
+	type P = PackedBinaryGhash1x128b;
+
+	#[test]
+	fn hachi_succinct_verifier_accepts_structured_constant_relation() {
+		let mut rng = StdRng::seed_from_u64(0);
+		let log_len = 7;
+		let oracle_specs = vec![OracleSpec {
+			log_msg_len: log_len,
+		}];
+		let hachi_setup = HachiSuccinctSetup::new(&oracle_specs);
+		let message = random_field_buffer::<P>(&mut rng, log_len);
+		let coefficient = B128::new(0x0101_0203_0508_0d15_2237_5990_e979_62db);
+		let transparent = FieldBuffer::<P>::from_values(&vec![coefficient; 1 << log_len]);
+		let claim = inner_product_buffers(&message, &transparent);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let mut prover_channel = HachiSuccinctProverChannel::new(
+			&mut prover_transcript,
+			oracle_specs.clone(),
+			&hachi_setup,
+		);
+		let oracle = prover_channel.send_oracle(message.to_ref());
+		prover_channel.prove_oracle_relations([(oracle, message, transparent, claim)]);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel = HachiSuccinctVerifierChannel::new(
+			&mut verifier_transcript,
+			&oracle_specs,
+			&hachi_setup,
+		);
+		let oracle = verifier_channel.recv_oracle().unwrap();
+		let structured_relation = ConstantTransparentRelation::new(log_len, coefficient);
+		verifier_channel
+			.verify_oracle_relations([OracleLinearRelation::new(
+				oracle,
+				Box::new(move |point: &[B128]| {
+					assert_eq!(point.len(), log_len);
+					coefficient
+				}),
+				claim,
+			)
+			.with_hachi_structured_transparent(structured_relation)])
+			.unwrap();
+		verifier_transcript.finalize().unwrap();
+	}
+
+	#[test]
+	fn hachi_succinct_verifier_rejects_wrong_structured_relation() {
+		let mut rng = StdRng::seed_from_u64(1);
+		let log_len = 7;
+		let oracle_specs = vec![OracleSpec {
+			log_msg_len: log_len,
+		}];
+		let hachi_setup = HachiSuccinctSetup::new(&oracle_specs);
+		let message = random_field_buffer::<P>(&mut rng, log_len);
+		let coefficient = B128::new(0x0101_0203_0508_0d15_2237_5990_e979_62db);
+		let transparent = FieldBuffer::<P>::from_values(&vec![coefficient; 1 << log_len]);
+		let claim = inner_product_buffers(&message, &transparent);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let mut prover_channel = HachiSuccinctProverChannel::new(
+			&mut prover_transcript,
+			oracle_specs.clone(),
+			&hachi_setup,
+		);
+		let oracle = prover_channel.send_oracle(message.to_ref());
+		prover_channel.prove_oracle_relations([(oracle, message, transparent, claim)]);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel = HachiSuccinctVerifierChannel::new(
+			&mut verifier_transcript,
+			&oracle_specs,
+			&hachi_setup,
+		);
+		let oracle = verifier_channel.recv_oracle().unwrap();
+		let wrong_coefficient = coefficient + B128::new(1);
+		let wrong_relation = ConstantTransparentRelation::new(log_len, wrong_coefficient);
+		assert!(
+			verifier_channel
+				.verify_oracle_relations([OracleLinearRelation::new(
+					oracle,
+					Box::new(move |point: &[B128]| {
+						assert_eq!(point.len(), log_len);
+						wrong_coefficient
+					}),
+					claim,
+				)
+				.with_hachi_structured_transparent(wrong_relation)])
+				.is_err()
+		);
+	}
+}

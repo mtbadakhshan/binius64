@@ -265,9 +265,9 @@ Track these as implementation targets for future agents:
   - Expected impact: removes all quotient bytes and parsing work for the 128 parity lanes.
 
 - [x] **Lazy selected-mask evaluation**
-  - Status: implemented for the selected-bit mask final check.
+  - Status: implemented for the selected-bit mask final check when the verifier has a materialized transparent coefficient vector.
   - Implementation: verifier evaluates the selected-bit mask directly at the product-sumcheck point instead of materializing the flattened `(oracle_index, bit_index)` mask table.
-  - Remaining work: verifier still reconstructs the transparent coefficient vector over the Boolean hypercube before the bridge check. A deeper optimization would fuse the transparent closure itself into lazy evaluation.
+  - Remaining work: the legacy path still reconstructs the transparent coefficient vector over the Boolean hypercube before the bridge check. Structured transparent relations address this only when the verifier has enough public structure to derive all bridge helper values without a full table scan.
 
 - [x] **Protocol-specific Hachi schedule tuning**
   - Status: first pass implemented.
@@ -287,6 +287,57 @@ Latest local result after the soundness hardening pass:
 - Prove time: 373.04 ms.
 - Verify time: 61.66 ms.
 - Hachi batched verify: approximately 1.71 ms.
+
+Latest local one-permutation Keccak result after the structured-relation pass:
+
+- Command shape: `HASH_MAX_BYTES=136 MESSAGE_LEN=136 LOG_INV_RATE=1` with `hachi-succinct`, release build.
+- Proof size: 83,891 bytes (81.925 KiB).
+- Prover time over five warm runs: 285.327 ms median, 285.609 ms mean.
+- Verifier time over five warm runs: 33.532 ms median, 33.568 ms mean.
+
+## Structured Transparent Relation Optimization
+
+The sublinear verifier work adds a typed, verifier-owned structured transparent relation hook to `OracleLinearRelation`. Generic IOP channels continue to use the existing `TransparentEvalFn` closure. The `hachi-succinct` verifier additionally accepts an optional `StructuredTransparentRelation` that can provide:
+
+```text
+eval_binius(point)
+parity_sum_bounds()
+eval_selected_mask(alpha, hachi_point)
+```
+
+When this object is present, `HachiSuccinctVerifierChannel::verify_oracle_relations` no longer materializes the full transparent coefficient table. It derives the public parity bounds, the selected-mask final sumcheck value, and the transparent MLE consistency value from verifier-owned structured code. The verifier still checks the legacy closure against `eval_binius(point)` at the final Binius challenge, so the structured path cannot silently drift from the ordinary oracle relation.
+
+The first implemented relation is `ConstantTransparentRelation`. For a table with `t_i = c`, the selected-mask MLE collapses to the seven bit-index variables only:
+
+```text
+sum_j eq(bit_point, j) * sum_k alpha^k * bit_k(c * basis_j)
+```
+
+This is exact and avoids both the transparent table scan and the flattened selected-mask scan. Tests compare its Binius MLE, parity bounds, and selected-mask evaluation against the legacy materialized implementation. A Hachi succinct round-trip test verifies the structured path accepts an honest constant relation, and a negative test verifies that a proof generated for one relation rejects if the verifier attaches a different structured relation.
+
+### What Is Still Missing
+
+The production terminal relation is not constant. It is:
+
+```text
+rs_eq_ind + batch_coeff * eq(pubcheck_point || 0, ·)
+```
+
+The verifier can evaluate this relation's Binius MLE sublinearly with the existing ring-switch and public-input equality formulas. That is not enough for the Hachi bridge selected-mask check. The selected mask depends on the bit pattern of every per-index coefficient product `t_i * basis_j`, then embeds those output bits into Hachi's prime field:
+
+```text
+M_alpha(i, j) = sum_k alpha^k * bit_k(t_i * basis_j)
+```
+
+This map is not a linear or affine function of the transparent MLE value. In general, evaluating `S(t_i)` after multilinear folding is not the same as folding the table of `S(t_i)`. Therefore the current production ring-switch relation remains on the legacy sound fallback path, which materializes the transparent coefficient table before verifying `hachi-succinct`.
+
+The next sound step must be one of:
+
+- derive an exact structured evaluator for the selected-mask table of the ring-switch relation, with tests against full materialization on small instances,
+- add a committed auxiliary mask polynomial and a proof tying it to the public ring-switch relation, or
+- change the bridge encoding so the final selected-mask relation is prime-field-linear in verifier-evaluable public data.
+
+Until one of those exists, the verifier must not use prover-supplied selected-mask values or an approximate shortcut for the production relation.
 
 ## Soundness Hardening Completed
 

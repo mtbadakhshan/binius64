@@ -233,21 +233,9 @@ impl<F: Field> IOPVerifier<F> {
 
 		// Verify all oracle relations
 		channel.verify_oracle_relations([
-			OracleLinearRelation {
-				oracle: precommit_oracle,
-				transparent: precommit_transparent,
-				claim: precommit_claim,
-			},
-			OracleLinearRelation {
-				oracle: private_oracle,
-				transparent: private_transparent,
-				claim: private_claim,
-			},
-			OracleLinearRelation {
-				oracle: mask_oracle,
-				transparent: mask_transparent,
-				claim: mask_eval,
-			},
+			OracleLinearRelation::new(precommit_oracle, precommit_transparent, precommit_claim),
+			OracleLinearRelation::new(private_oracle, private_transparent, private_claim),
+			OracleLinearRelation::new(mask_oracle, mask_transparent, mask_eval),
 		])?;
 
 		Ok(())
