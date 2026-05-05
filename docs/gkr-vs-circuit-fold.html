@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GKR vs CircuitBuilder: How Bits Become Field Elements</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f5f5f5; padding: 20px; color: #333; }
+  h1 { text-align: center; margin-bottom: 6px; font-size: 1.4em; color: #1a1a2e; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 24px; font-size: 0.85em; }
+  .container { max-width: 1100px; margin: 0 auto; }
+
+  .panel {
+    background: #fff; border-radius: 10px; padding: 20px; margin: 16px 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+  .panel-title {
+    font-size: 1.1em; font-weight: 700; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 12px;
+    font-size: 0.75em; font-weight: 700; color: #fff;
+  }
+  .badge-gkr { background: #c62828; }
+  .badge-cb { background: #1565c0; }
+  .badge-both { background: #555; }
+
+  .step {
+    border: 2px solid #ddd; border-radius: 8px; padding: 14px;
+    margin: 10px 0; position: relative;
+  }
+  .step-gkr { border-color: #e57373; background: #fff8f8; }
+  .step-cb { border-color: #64b5f6; background: #f0f7ff; }
+  .step-shared { border-color: #bbb; background: #fafafa; }
+  .step-label {
+    font-weight: 700; font-size: 0.85em; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .step-num {
+    width: 24px; height: 24px; border-radius: 50%; display: flex;
+    align-items: center; justify-content: center;
+    font-size: 0.75em; font-weight: 800; color: #fff;
+  }
+  .step-num-gkr { background: #c62828; }
+  .step-num-cb { background: #1565c0; }
+  .step-num-both { background: #555; }
+
+  .data-row {
+    display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0;
+    align-items: center;
+  }
+  .data-label {
+    font-size: 0.75em; font-weight: 600; color: #888;
+    min-width: 90px;
+  }
+  .bit-cell {
+    width: 22px; height: 22px; border-radius: 3px;
+    font-size: 0.65em; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid;
+  }
+  .bit-0 { background: #e8f5e9; border-color: #a5d6a7; color: #2e7d32; }
+  .bit-1 { background: #fff3e0; border-color: #ffcc80; color: #e65100; }
+  .field-cell {
+    min-width: 44px; height: 22px; border-radius: 3px;
+    font-size: 0.6em; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0 4px; border: 1px solid;
+  }
+  .field-small { background: #e3f2fd; border-color: #90caf9; color: #0d47a1; }
+  .field-big { background: #fce4ec; border-color: #f48fb1; color: #880e4f; min-width: 80px; }
+  .field-result { background: #f3e5f5; border-color: #ce93d8; color: #6a1b9a; }
+
+  .arrow-down {
+    text-align: center; font-size: 1.2em; color: #999; margin: 4px 0;
+  }
+  .note {
+    font-size: 0.75em; color: #888; font-style: italic; margin-top: 6px;
+  }
+  .highlight-box {
+    background: #fff9c4; border: 2px solid #fdd835; border-radius: 6px;
+    padding: 8px 12px; margin: 8px 0; font-size: 0.8em;
+  }
+  .size-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 0.7em; font-weight: 700; margin-left: 8px;
+  }
+  .size-small { background: #c8e6c9; color: #1b5e20; }
+  .size-big { background: #ffcdd2; color: #b71c1c; }
+
+  .comparison {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0;
+  }
+  @media (max-width: 800px) { .comparison { grid-template-columns: 1fr; } }
+
+  .formula {
+    font-family: 'Courier New', monospace; font-size: 0.8em;
+    background: #f5f5f5; padding: 6px 10px; border-radius: 4px;
+    margin: 6px 0; border-left: 3px solid #999;
+  }
+  .formula-gkr { border-left-color: #c62828; }
+  .formula-cb { border-left-color: #1565c0; }
+
+  table.summary {
+    width: 100%; border-collapse: collapse; font-size: 0.8em; margin-top: 12px;
+  }
+  table.summary th, table.summary td {
+    padding: 6px 10px; border: 1px solid #ddd; text-align: center;
+  }
+  table.summary th { background: #eee; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<h1>GKR vs CircuitBuilder: How Bits Become Field Elements</h1>
+<p class="subtitle">
+  A concrete example with 4 Keccak instances (h=4), showing ONE lane (1 of 25), tracking what happens to the 64 bits.<br>
+  For simplicity we show only 4 bits (not 64) and use small numbers instead of GF(2^128) elements.
+</p>
+
+<div class="container">
+
+<!-- ==================== STARTING DATA ==================== -->
+<div class="panel">
+  <div class="panel-title">
+    <span class="badge badge-both">BOTH</span>
+    Starting Data: 4 instances, 1 lane, 4 bits each
+  </div>
+  <p style="font-size:0.8em; color:#666; margin-bottom:10px;">
+    Each instance has a u64 word for this lane. We show only 4 bits for clarity.
+    In reality it's 64 bits × 25 lanes × h instances.
+  </p>
+
+  <div class="step step-shared">
+    <div class="step-label"><span class="step-num step-num-both">0</span> Raw u64 words (binary data)</div>
+    <div class="data-row">
+      <span class="data-label">Instance 0:</span>
+      <span class="bit-cell bit-1">1</span>
+      <span class="bit-cell bit-0">0</span>
+      <span class="bit-cell bit-1">1</span>
+      <span class="bit-cell bit-1">1</span>
+      <span style="font-size:0.7em; color:#888; margin-left:8px;">word = 0b1101 = 13</span>
+    </div>
+    <div class="data-row">
+      <span class="data-label">Instance 1:</span>
+      <span class="bit-cell bit-0">0</span>
+      <span class="bit-cell bit-1">1</span>
+      <span class="bit-cell bit-0">0</span>
+      <span class="bit-cell bit-1">1</span>
+      <span style="font-size:0.7em; color:#888; margin-left:8px;">word = 0b1010 = 10</span>
+    </div>
+    <div class="data-row">
+      <span class="data-label">Instance 2:</span>
+      <span class="bit-cell bit-1">1</span>
+      <span class="bit-cell bit-1">1</span>
+      <span class="bit-cell bit-0">0</span>
+      <span class="bit-cell bit-0">0</span>
+      <span style="font-size:0.7em; color:#888; margin-left:8px;">word = 0b0011 = 3</span>
+    </div>
+    <div class="data-row">
+      <span class="data-label">Instance 3:</span>
+      <span class="bit-cell bit-0">0</span>
+      <span class="bit-cell bit-0">0</span>
+      <span class="bit-cell bit-1">1</span>
+      <span class="bit-cell bit-0">0</span>
+      <span style="font-size:0.7em; color:#888; margin-left:8px;">word = 0b0100 = 4</span>
+    </div>
+    <div class="note">
+      Total: 4 instances × 4 bits × 1 bit = <strong>2 bytes</strong> of data.
+      In reality: h × 64 × 25 × 1 bit. At h=16384: <strong>3.2 MB</strong>.
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SIDE BY SIDE ==================== -->
+<div class="comparison">
+
+<!-- ==================== GKR SIDE ==================== -->
+<div>
+  <div class="panel" style="border-top: 4px solid #c62828;">
+    <div class="panel-title">
+      <span class="badge badge-gkr">GKR</span>
+      Fused Round Prover
+    </div>
+
+    <div class="step step-gkr">
+      <div class="step-label"><span class="step-num step-num-gkr">1</span> Sumcheck Round 1: fold instances (from words)</div>
+      <p style="font-size:0.75em; color:#666; margin-bottom:8px;">
+        Split into lo={inst 0,1} and hi={inst 2,3}. Verifier sends challenge r<sub>1</sub> = <strong>α</strong>.
+        Each BIT folds independently: folded[bit] = lo[bit] + α × (hi[bit] - lo[bit]).
+      </p>
+
+      <div class="formula formula-gkr">
+        bit 0: inst0=1, inst2=1 → 1 + α(1-1) = <strong>1</strong><br>
+        bit 1: inst0=0, inst2=1 → 0 + α(1-0) = <strong>α</strong><br>
+        bit 2: inst0=1, inst2=0 → 1 + α(0-1) = <strong>1+α</strong><br>
+        bit 3: inst0=1, inst2=0 → 1 + α(0-1) = <strong>1+α</strong>
+      </div>
+
+      <div class="data-row">
+        <span class="data-label">Folded inst 0|2:</span>
+        <span class="field-cell field-big">1</span>
+        <span class="field-cell field-big">α</span>
+        <span class="field-cell field-big">1+α</span>
+        <span class="field-cell field-big">1+α</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">Folded inst 1|3:</span>
+        <span class="field-cell field-big">α</span>
+        <span class="field-cell field-big">1</span>
+        <span class="field-cell field-big">α</span>
+        <span class="field-cell field-big">1+α</span>
+      </div>
+
+      <div class="highlight-box">
+        <strong>Key moment:</strong> Each bit is now a GF(2<sup>128</sup>) element (like "α" or "1+α").
+        <br>1 word (4 bits) → <strong>4 field elements</strong> = 4 × 16 = <strong>64 bytes</strong>
+        <span class="size-tag size-big">32× blowup!</span>
+        <br><span style="font-size:0.9em;">(In reality: 64 bits → 64 × 16 = 1024 bytes. That's <strong>128× blowup</strong>.)</span>
+      </div>
+    </div>
+
+    <div class="arrow-down">↓</div>
+
+    <div class="step step-gkr">
+      <div class="step-label"><span class="step-num step-num-gkr">2</span> Sumcheck Round 2: fold again (on field blocks)</div>
+      <p style="font-size:0.75em; color:#666; margin-bottom:8px;">
+        Now each "instance" has 4 field elements. Fold with challenge r<sub>2</sub> = <strong>β</strong>.
+        Each position folds: result[bit] = lo[bit] + β × (hi[bit] - lo[bit]).
+      </p>
+
+      <div class="formula formula-gkr">
+        bit 0: 1 + β(α - 1) = <strong>1 + β(α+1)</strong><br>
+        bit 1: α + β(1 - α) = <strong>α + β(1+α)</strong><br>
+        bit 2: (1+α) + β(α - (1+α)) = <strong>(1+α) + β(1)</strong><br>
+        bit 3: (1+α) + β((1+α) - (1+α)) = <strong>1+α</strong>
+      </div>
+
+      <div class="data-row">
+        <span class="data-label">Final (1 inst):</span>
+        <span class="field-cell field-big">1+β(α+1)</span>
+        <span class="field-cell field-big">α+β(1+α)</span>
+        <span class="field-cell field-big">1+α+β</span>
+        <span class="field-cell field-big">1+α</span>
+      </div>
+
+      <div class="note">
+        Still 4 field elements. The dot product with bit_weights gives one scalar = the MLE evaluation.
+      </div>
+    </div>
+
+    <div class="highlight-box" style="background:#ffebee; border-color:#c62828;">
+      <strong>GKR summary:</strong> After round 1, each bit became a full GF(2<sup>128</sup>) element.
+      Round 2 operates on <strong>4 field elements per instance</strong> = 64 bytes each.
+      <br>All subsequent rounds work on this bloated representation.
+      <br>At h=16384: round 2 scans 8192 × 64 × 16 = <strong>200 MB</strong>.
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CIRCUITBUILDER SIDE ==================== -->
+<div>
+  <div class="panel" style="border-top: 4px solid #1565c0;">
+    <div class="panel-title">
+      <span class="badge badge-cb">CIRCUIT</span>
+      AND Reduction (Phase 1 → Phase 2)
+    </div>
+
+    <div class="step step-cb">
+      <div class="step-label"><span class="step-num step-num-cb">1</span> Phase 1: Collapse bits FIRST (univariate skip)</div>
+      <p style="font-size:0.75em; color:#666; margin-bottom:8px;">
+        Before folding instances, compute the weighted sum of all 4 bits in each word
+        using Lagrange weights w<sub>0</sub>, w<sub>1</sub>, w<sub>2</sub>, w<sub>3</sub>
+        at the challenge point z.
+      </p>
+
+      <div class="formula formula-cb">
+        Lagrange weights at z: w = [w₀, w₁, w₂, w₃]<br><br>
+        inst 0: bits=[1,0,1,1] → 1·w₀ + 0·w₁ + 1·w₂ + 1·w₃ = <strong>w₀+w₂+w₃</strong><br>
+        inst 1: bits=[0,1,0,1] → 0·w₀ + 1·w₁ + 0·w₂ + 1·w₃ = <strong>w₁+w₃</strong><br>
+        inst 2: bits=[1,1,0,0] → 1·w₀ + 1·w₁ + 0·w₂ + 0·w₃ = <strong>w₀+w₁</strong><br>
+        inst 3: bits=[0,0,1,0] → 0·w₀ + 0·w₁ + 1·w₂ + 0·w₃ = <strong>w₂</strong>
+      </div>
+
+      <div class="data-row">
+        <span class="data-label">After Phase 1:</span>
+        <span class="field-cell field-small">w₀+w₂+w₃</span>
+        <span class="field-cell field-small">w₁+w₃</span>
+        <span class="field-cell field-small">w₀+w₁</span>
+        <span class="field-cell field-small">w₂</span>
+      </div>
+
+      <div class="highlight-box">
+        <strong>Key moment:</strong> Each word collapsed to <strong>ONE</strong> field element.
+        <br>1 word (4 bits) → <strong>1 field element</strong> = 1 × 16 = <strong>16 bytes</strong>
+        <span class="size-tag size-small">4× blowup only!</span>
+        <br><span style="font-size:0.9em;">(In reality: 64 bits → 1 × 16 = 16 bytes. That's <strong>2× blowup</strong>. vs GKR's 128×.)</span>
+      </div>
+    </div>
+
+    <div class="arrow-down">↓</div>
+
+    <div class="step step-cb">
+      <div class="step-label"><span class="step-num step-num-cb">2</span> Phase 2: Fold instances (on compact data)</div>
+      <p style="font-size:0.75em; color:#666; margin-bottom:8px;">
+        Now each instance is just ONE field element. Fold with challenge r<sub>1</sub> = <strong>α</strong>.
+      </p>
+
+      <div class="formula formula-cb">
+        lo = [w₀+w₂+w₃, w₁+w₃], hi = [w₀+w₁, w₂]<br><br>
+        fold 0|2: (w₀+w₂+w₃) + α((w₀+w₁) - (w₀+w₂+w₃)) = <strong>one number</strong><br>
+        fold 1|3: (w₁+w₃) + α(w₂ - (w₁+w₃)) = <strong>one number</strong>
+      </div>
+
+      <div class="data-row">
+        <span class="data-label">After fold:</span>
+        <span class="field-cell field-small">scalar₀</span>
+        <span class="field-cell field-small">scalar₁</span>
+      </div>
+
+      <div class="note">
+        2 instances × 1 field element each = 32 bytes. Clean, compact.
+      </div>
+    </div>
+
+    <div class="arrow-down">↓</div>
+
+    <div class="step step-cb">
+      <div class="step-label"><span class="step-num step-num-cb">3</span> Fold again → done</div>
+      <div class="data-row">
+        <span class="data-label">Final:</span>
+        <span class="field-cell field-result">ONE scalar</span>
+      </div>
+    </div>
+
+    <div class="highlight-box" style="background:#e3f2fd; border-color:#1565c0;">
+      <strong>CircuitBuilder summary:</strong> The bits are collapsed to one scalar per word
+      <strong>before</strong> any instance folding.
+      <br>Phase 2 works on <strong>1 field element per instance</strong> = 16 bytes each.
+      <br>At h=16384: Phase 2 scans 16384 × 16 = <strong>0.25 MB</strong>.
+    </div>
+  </div>
+</div>
+
+</div><!-- end comparison -->
+
+<!-- ==================== SUMMARY TABLE ==================== -->
+<div class="panel">
+  <div class="panel-title">
+    <span class="badge badge-both">SUMMARY</span>
+    Data Size After First Fold (at h=16384, 25 lanes)
+  </div>
+
+  <table class="summary">
+    <thead>
+      <tr>
+        <th></th>
+        <th>Bits per word</th>
+        <th>After first fold</th>
+        <th>Elements per instance</th>
+        <th>Bytes per instance</th>
+        <th>Total for h/2 instances</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="text-align:left; font-weight:700; color:#c62828;">GKR</td>
+        <td>64</td>
+        <td>Each bit → 1 field element</td>
+        <td style="color:#c62828; font-weight:700;">64 × 25 = 1,600</td>
+        <td style="color:#c62828; font-weight:700;">25,600</td>
+        <td style="color:#c62828; font-weight:700;">200 MB</td>
+      </tr>
+      <tr>
+        <td style="text-align:left; font-weight:700; color:#1565c0;">CircuitBuilder</td>
+        <td>64</td>
+        <td>All 64 bits → 1 field element</td>
+        <td style="color:#1565c0; font-weight:700;">1 × 25 = 25</td>
+        <td style="color:#1565c0; font-weight:700;">400</td>
+        <td style="color:#1565c0; font-weight:700;">3.1 MB</td>
+      </tr>
+      <tr style="background:#f9f9f9;">
+        <td style="text-align:left; font-weight:700;">Ratio</td>
+        <td></td>
+        <td></td>
+        <td style="font-weight:700;">64×</td>
+        <td style="font-weight:700;">64×</td>
+        <td style="font-weight:700;">64×</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div style="margin-top:16px; font-size:0.8em; color:#555; line-height:1.6;">
+    <strong>Why the GKR can't do Phase 1 first:</strong><br>
+    The CircuitBuilder's Phase 1 evaluates a simple polynomial per word: <code>A·B - C</code> (three lookups + one multiply).<br>
+    The GKR's polynomial is <code>chi(theta(rho(pi(input))))</code> — 25 lanes, rotations, XOR mixing, AND gates.
+    Evaluating this at 64 or 128 points on the bit-axis domain costs 64-128× the work,
+    which makes the "skip" more expensive than just doing the standard fold.
+    <br><br>
+    <strong>Bottom line:</strong> The CircuitBuilder pays 1× to collapse bits, then does everything on compact data.
+    The GKR pays 1× for the first round (words), then 64× for ALL remaining rounds (field blocks).
+  </div>
+</div>
+
+</div><!-- end container -->
+</body>
+</html>

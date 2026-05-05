@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Keccak GKR: Instances, MLEs, and the Sumcheck</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f5f5f5; padding: 20px; color: #333; line-height: 1.6; }
+  h1 { text-align: center; margin-bottom: 4px; font-size: 1.4em; color: #1a1a2e; }
+  h2 { font-size: 1.1em; color: #1a1a2e; margin: 20px 0 8px; border-bottom: 2px solid #ddd; padding-bottom: 4px; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 24px; font-size: 0.85em; }
+  .container { max-width: 900px; margin: 0 auto; }
+
+  .panel {
+    background: #fff; border-radius: 10px; padding: 18px 20px; margin: 14px 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+
+  .grid-state {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px;
+    max-width: 340px; margin: 8px 0;
+  }
+  .lane-cell {
+    height: 30px; border-radius: 3px; font-size: 0.6em; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    border: 1.5px solid;
+  }
+  .lane-green { background: #e8f5e9; border-color: #66bb6a; color: #2e7d32; }
+
+  .bit-bar {
+    display: flex; gap: 1px; margin: 4px 0;
+  }
+  .bit-tiny {
+    width: 10px; height: 16px; font-size: 0.5em; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 1px;
+  }
+  .b0 { background: #c8e6c9; color: #1b5e20; }
+  .b1 { background: #ffcc80; color: #e65100; }
+
+  .mle-table {
+    width: 100%; border-collapse: collapse; font-size: 0.75em; margin: 8px 0;
+  }
+  .mle-table th, .mle-table td {
+    padding: 4px 8px; border: 1px solid #ddd; text-align: center;
+  }
+  .mle-table th { background: #f0f0f0; font-weight: 700; }
+
+  .formula-box {
+    font-family: 'Courier New', monospace; font-size: 0.8em;
+    background: #f9f9f9; padding: 10px 14px; border-radius: 6px;
+    margin: 8px 0; border-left: 4px solid;
+    line-height: 1.8;
+  }
+  .fb-blue { border-left-color: #1565c0; }
+  .fb-red { border-left-color: #c62828; }
+  .fb-green { border-left-color: #2e7d32; }
+  .fb-purple { border-left-color: #6a1b9a; }
+
+  .step-box {
+    border: 2px solid #ddd; border-radius: 8px; padding: 14px; margin: 10px 0;
+  }
+  .step-title {
+    font-weight: 700; font-size: 0.9em; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .step-num {
+    width: 26px; height: 26px; border-radius: 50%; background: #1565c0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.75em; font-weight: 800; color: #fff; flex-shrink: 0;
+  }
+
+  .highlight { background: #fff9c4; padding: 8px 12px; border-radius: 6px; margin: 8px 0; font-size: 0.8em; border: 1px solid #fdd835; }
+
+  .note { font-size: 0.75em; color: #888; font-style: italic; margin-top: 4px; }
+
+  .arrow { text-align: center; font-size: 1.2em; color: #999; margin: 6px 0; }
+
+  .field-val {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-family: monospace; font-size: 0.85em; font-weight: 600;
+  }
+  .fv-bit { background: #e8f5e9; color: #2e7d32; }
+  .fv-field { background: #fce4ec; color: #880e4f; }
+  .fv-result { background: #e8eaf6; color: #283593; }
+</style>
+</head>
+<body>
+
+<h1>Keccak GKR: What Is an "Instance" and What Does the Sumcheck Do?</h1>
+<p class="subtitle">
+  A step-by-step walkthrough with concrete numbers. h=4 instances, showing one Keccak round.
+</p>
+
+<div class="container">
+
+<!-- ==================== WHAT IS AN INSTANCE ==================== -->
+<div class="panel">
+  <h2>1. What Is an Instance?</h2>
+  <p style="font-size:0.85em;">
+    An <strong>instance</strong> is one independent execution of keccak-f[1600]. If you're hashing 4 different messages,
+    you have 4 instances of the keccak-f permutation, each with its own 1600-bit input state and 1600-bit output state.
+  </p>
+
+  <div style="display:flex; gap:20px; flex-wrap:wrap; margin:12px 0;">
+    <div>
+      <div style="font-size:0.75em; font-weight:700; color:#2e7d32; margin-bottom:4px;">Instance 0</div>
+      <div class="grid-state">
+        <div class="lane-cell lane-green">A[0,0]</div><div class="lane-cell lane-green">A[1,0]</div>
+        <div class="lane-cell lane-green">A[2,0]</div><div class="lane-cell lane-green">A[3,0]</div>
+        <div class="lane-cell lane-green">A[4,0]</div>
+        <div class="lane-cell lane-green">A[0,1]</div><div class="lane-cell lane-green">A[1,1]</div>
+        <div class="lane-cell lane-green">A[2,1]</div><div class="lane-cell lane-green">A[3,1]</div>
+        <div class="lane-cell lane-green">A[4,1]</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+      </div>
+      <div style="font-size:0.65em; color:#888;">25 lanes × 64 bits = 1600 bits</div>
+    </div>
+    <div>
+      <div style="font-size:0.75em; font-weight:700; color:#2e7d32; margin-bottom:4px;">Instance 1</div>
+      <div class="grid-state">
+        <div class="lane-cell lane-green">A[0,0]</div><div class="lane-cell lane-green">A[1,0]</div>
+        <div class="lane-cell lane-green">A[2,0]</div><div class="lane-cell lane-green">A[3,0]</div>
+        <div class="lane-cell lane-green">A[4,0]</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+        <div class="lane-cell lane-green" style="font-size:0.5em;">...</div>
+      </div>
+      <div style="font-size:0.65em; color:#888;">Same structure, different data</div>
+    </div>
+    <div style="font-size:1.5em; color:#bbb; align-self:center;">... ×h</div>
+  </div>
+
+  <p style="font-size:0.85em; margin-top:8px;">
+    Each lane is a 64-bit word (u64). Lane A[x,y] of instance <em>i</em> is a specific u64 value.
+    We want to prove: "applying one Keccak round to the input state gives the output state" — for ALL h instances simultaneously.
+  </p>
+</div>
+
+<!-- ==================== THE MLE ==================== -->
+<div class="panel">
+  <h2>2. The Multilinear Extension (MLE)</h2>
+  <p style="font-size:0.85em;">
+    To use the sumcheck protocol, we represent each lane as a polynomial. For h=4 instances with 64 bits per lane,
+    we need n = 6 + log₂(4) = 8 variables.
+  </p>
+
+  <p style="font-size:0.85em; margin-top:8px;">
+    <strong>For simplicity, let's use 4 bits and 4 instances</strong>, so n = 2 + 2 = 4 variables:
+    (v₁, v₂) index the 4 bit positions, (v₃, v₄) index the 4 instances.
+  </p>
+
+  <div class="formula-box fb-green">
+    Lane MLE: A(v₁, v₂, v₃, v₄)
+    <br>
+    <br>On Boolean inputs: A(b₁, b₂, b₃, b₄) = bit ⟨b₁b₂⟩ of lane in instance ⟨b₃b₄⟩
+    <br>
+    <br>Example: A(1, 0, 0, 1) = bit 2 of instance 1
+    <br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; (because ⟨1,0⟩ = 2 and ⟨0,1⟩ = 1)
+  </div>
+
+  <p style="font-size:0.85em;">Concrete values for one lane (say A[0,0]):</p>
+
+  <table class="mle-table">
+    <thead>
+      <tr>
+        <th>Instance (v₃,v₄)</th>
+        <th>u64 word</th>
+        <th>bit 0 (0,0)</th>
+        <th>bit 1 (1,0)</th>
+        <th>bit 2 (0,1)</th>
+        <th>bit 3 (1,1)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>inst 0 (0,0)</td>
+        <td style="font-family:monospace;">0b1101</td>
+        <td><span class="fv-bit">1</span></td>
+        <td><span class="fv-bit">0</span></td>
+        <td><span class="fv-bit">1</span></td>
+        <td><span class="fv-bit">1</span></td>
+      </tr>
+      <tr>
+        <td>inst 1 (1,0)</td>
+        <td style="font-family:monospace;">0b1010</td>
+        <td><span class="fv-bit">0</span></td>
+        <td><span class="fv-bit">1</span></td>
+        <td><span class="fv-bit">0</span></td>
+        <td><span class="fv-bit">1</span></td>
+      </tr>
+      <tr>
+        <td>inst 2 (0,1)</td>
+        <td style="font-family:monospace;">0b0011</td>
+        <td><span class="fv-bit">1</span></td>
+        <td><span class="fv-bit">1</span></td>
+        <td><span class="fv-bit">0</span></td>
+        <td><span class="fv-bit">0</span></td>
+      </tr>
+      <tr>
+        <td>inst 3 (1,1)</td>
+        <td style="font-family:monospace;">0b0100</td>
+        <td><span class="fv-bit">0</span></td>
+        <td><span class="fv-bit">0</span></td>
+        <td><span class="fv-bit">1</span></td>
+        <td><span class="fv-bit">0</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p style="font-size:0.8em; color:#555;">
+    This table IS the MLE. On Boolean inputs, A(v₁,v₂,v₃,v₄) returns one of these 0/1 values.
+    On non-Boolean inputs (random GF(2¹²⁸) points), the MLE interpolates — giving a "mixed" field element.
+  </p>
+</div>
+
+<!-- ==================== WHAT THE SUMCHECK PROVES ==================== -->
+<div class="panel">
+  <h2>3. What the Sumcheck Proves</h2>
+
+  <p style="font-size:0.85em;">
+    We want to prove: "applying chi+iota to the pre-chi state gives the output state."
+    The polynomial identity (for one output lane, simplified):
+  </p>
+
+  <div class="formula-box fb-red">
+    Output[i,j](v) = PreChi[i,j](v) + PreChi[i+2,j](v) + PreChi[i+1,j](v) · PreChi[i+2,j](v) + RC
+    <br><br>
+    This must hold for ALL v on the Boolean hypercube {0,1}⁴
+    <br>(= for every bit position in every instance)
+  </div>
+
+  <p style="font-size:0.85em; margin-top:8px;">
+    The sumcheck protocol doesn't check all 2⁴ = 16 points directly.
+    Instead, it reduces the check to a <strong>single evaluation at a random point</strong>:
+  </p>
+
+  <div class="formula-box fb-purple">
+    Claim: Σ<sub>v ∈ {0,1}⁴</sub> eq(α, v) · f(v) = mixed_eval
+    <br><br>
+    where f(v) = Σ<sub>i,j</sub> w[i,j] · chi_iota(input(v))[i,j]
+    <br>and α = random GF(2¹²⁸) point chosen by verifier
+    <br>and mixed_eval = Σ<sub>i,j</sub> w[i,j] · output[i,j](α)
+  </div>
+
+  <p style="font-size:0.8em; color:#555; margin-top:6px;">
+    If the identity holds on all Boolean points, then by MLE uniqueness it holds at α too.
+    The sumcheck protocol verifies this random-point evaluation interactively.
+  </p>
+</div>
+
+<!-- ==================== HOW THE SUMCHECK EXECUTES ==================== -->
+<div class="panel">
+  <h2>4. How the Sumcheck Executes (Round by Round)</h2>
+
+  <p style="font-size:0.85em; margin-bottom:12px;">
+    The sumcheck has n = 4 variables. It binds one variable per round, starting from the last
+    (highest instance variable) and working down.
+    <br><strong>In the GKR, only the 2 instance variables (v₃, v₄) are sumcheck'd.</strong>
+    The 2 bit variables (v₁, v₂) are pre-collapsed at the boundary using <code>bit_challenge</code>.
+    So we actually run <strong>2 rounds</strong>, not 4.
+  </p>
+
+  <!-- Round 1 -->
+  <div class="step-box" style="border-color:#c62828;">
+    <div class="step-title"><span class="step-num" style="background:#c62828;">R1</span> Sumcheck Round 1: bind v₄ (instance high bit)</div>
+
+    <p style="font-size:0.8em; margin-bottom:8px;">
+      Split instances into lo (v₄=0) and hi (v₄=1):
+    </p>
+
+    <div style="display:flex; gap:30px; margin:8px 0; flex-wrap:wrap;">
+      <div>
+        <div style="font-size:0.75em; font-weight:700; color:#1565c0;">lo half (v₄=0)</div>
+        <div style="font-size:0.8em;">Instance 0 (v₃=0, v₄=0): word = 0b1101</div>
+        <div style="font-size:0.8em;">Instance 1 (v₃=1, v₄=0): word = 0b1010</div>
+      </div>
+      <div>
+        <div style="font-size:0.75em; font-weight:700; color:#e65100;">hi half (v₄=1)</div>
+        <div style="font-size:0.8em;">Instance 2 (v₃=0, v₄=1): word = 0b0011</div>
+        <div style="font-size:0.8em;">Instance 3 (v₃=1, v₄=1): word = 0b0100</div>
+      </div>
+    </div>
+
+    <p style="font-size:0.8em; margin:8px 0;">
+      The prover computes f(v₁,v₂,v₃, z) for z ∈ {0, 1, ∞}, summing over (v₁,v₂,v₃):
+    </p>
+
+    <div class="formula-box fb-red">
+      y₀ = Σ<sub>v₁,v₂,v₃</sub> eq(α, v) · f(v₁,v₂,v₃, 0)  [uses lo instances only]
+      <br>y₁ = Σ<sub>v₁,v₂,v₃</sub> eq(α, v) · f(v₁,v₂,v₃, 1)  [uses hi instances only]
+      <br>y∞ = degree-2 coefficient                               [uses lo XOR hi]
+      <br><br>
+      This gives a degree-2 polynomial g₁(z) = c₀ + c₁z + c₂z²
+      <br>The prover sends c₁, c₂ (2 field elements = 32 bytes)
+    </div>
+
+    <p style="font-size:0.8em;">
+      Verifier checks g₁(0) + g₁(1) relates to the claim, then samples challenge <span class="fv-field">r₁</span>.
+    </p>
+
+    <div class="highlight">
+      <strong>Now the fold happens:</strong> For each pair (inst 0, inst 2) and (inst 1, inst 3),
+      compute the folded value at v₄ = r₁:
+      <br><br>
+      <strong>This is where bits become field elements.</strong>
+      For bit 0: inst0 has bit=1, inst2 has bit=1 → folded = 1 + r₁(1-1) = <span class="fv-field">1</span>
+      <br>For bit 1: inst0 has bit=0, inst2 has bit=1 → folded = 0 + r₁(1-0) = <span class="fv-field">r₁</span>
+      <br>For bit 2: inst0 has bit=1, inst2 has bit=0 → folded = 1 + r₁(0-1) = <span class="fv-field">1+r₁</span>
+      <br><br>
+      Each bit became a different GF(2¹²⁸) value!
+      <br>4 bits × 2 remaining instances = <strong>8 field elements</strong> stored for the next round.
+    </div>
+  </div>
+
+  <div class="arrow">↓ now working on field elements, not bits ↓</div>
+
+  <!-- Round 2 -->
+  <div class="step-box" style="border-color:#1565c0;">
+    <div class="step-title"><span class="step-num">R2</span> Sumcheck Round 2: bind v₃ (instance low bit)</div>
+
+    <p style="font-size:0.8em; margin-bottom:8px;">
+      Split the 2 remaining folded instances into lo and hi:
+    </p>
+
+    <div style="display:flex; gap:30px; margin:8px 0; flex-wrap:wrap;">
+      <div>
+        <div style="font-size:0.75em; font-weight:700; color:#1565c0;">lo (v₃=0): folded inst 0|2</div>
+        <div style="font-size:0.8em;">
+          bits: [<span class="fv-field">1</span>, <span class="fv-field">r₁</span>,
+          <span class="fv-field">1+r₁</span>, <span class="fv-field">1+r₁</span>]
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.75em; font-weight:700; color:#e65100;">hi (v₃=1): folded inst 1|3</div>
+        <div style="font-size:0.8em;">
+          bits: [<span class="fv-field">r₁</span>, <span class="fv-field">1</span>,
+          <span class="fv-field">r₁</span>, <span class="fv-field">1+r₁</span>]
+        </div>
+      </div>
+    </div>
+
+    <p style="font-size:0.8em;">
+      The prover evaluates the chi polynomial on these <strong>field-element blocks</strong>.
+      This is the expensive part — each chi evaluation requires GF(2¹²⁸) multiplications (PMULL).
+    </p>
+
+    <div class="formula-box fb-blue">
+      For each output lane (i,j):
+      <br>&nbsp;&nbsp;a = preChi_lo[i,j],  b = preChi_lo[i+1,j],  c = preChi_lo[i+2,j]
+      <br>&nbsp;&nbsp;chi_1 = a + c + b·c   ← this "b·c" is a GF(2¹²⁸) multiply (PMULL!)
+      <br><br>
+      Each of the 4 "bit" positions requires its own PMULL.
+      With 25 lanes × 4 bits = 100 PMULLs per instance pair.
+      <br>(In reality: 25 × 64 = 1600 PMULLs per instance pair)
+    </div>
+
+    <p style="font-size:0.8em;">
+      The prover sends c₁, c₂ again. Verifier samples <span class="fv-field">r₂</span>.
+      Final fold produces one instance with 4 field elements.
+    </p>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <!-- Finish -->
+  <div class="step-box" style="border-color:#6a1b9a;">
+    <div class="step-title"><span class="step-num" style="background:#6a1b9a;">F</span> Finish: dot product with bit_weights</div>
+
+    <p style="font-size:0.8em;">
+      The 4 remaining field elements are dot-producted with the <code>bit_weights</code>
+      (Lagrange basis at <code>bit_challenge</code>) to produce <strong>25 scalar evaluations</strong>
+      — one per lane. These are the input lane evals that chain to the next Keccak round.
+    </p>
+
+    <div class="formula-box fb-purple">
+      For each lane ℓ:
+      <br>&nbsp;&nbsp;eval[ℓ] = Σ<sub>b=0..3</sub> final_block[ℓ][b] × bit_weights[b]
+      <br><br>
+      = one GF(2¹²⁸) scalar per lane
+      <br>= the MLE of lane ℓ evaluated at point (r₂, r₁, bit_challenge₁, bit_challenge₂)
+    </div>
+  </div>
+</div>
+
+<!-- ==================== THE FULL PICTURE ==================== -->
+<div class="panel">
+  <h2>5. The Full 24-Round Chain</h2>
+
+  <p style="font-size:0.85em;">
+    Each Keccak round executes the sumcheck above. The output (25 lane evals at the reduced point)
+    becomes the verifier's claim for the NEXT round:
+  </p>
+
+  <div class="formula-box fb-green">
+    Round 23: output claim on final state → sumcheck → 25 input evals = round 22's output evals
+    <br>Round 22: output claim from round 23 → sumcheck → 25 input evals = round 21's output evals
+    <br>&nbsp;&nbsp;...
+    <br>Round  0: output claim from round 1  → sumcheck → 25 input evals = initial state evals
+    <br><br>
+    At the end: the 25 initial-state evals are checked against the committed input.
+    <br><br>
+    <strong>Total: 24 sequential sumchecks, each with log₂(h) rounds.</strong>
+    <br>Each sumcheck round scans all remaining instances.
+    <br>After the first fold of each sumcheck, every bit becomes a field element.
+  </div>
+
+  <div class="highlight">
+    <strong>The bottleneck:</strong>
+    <br>24 sumchecks × log₂(h) rounds each × scan all instances per round.
+    <br>After the first round of each sumcheck, data is 64× larger (field elements vs bits).
+    <br>This is why each Keccak round takes ~24ms uniformly — it's dominated by
+    the GF(2¹²⁸) block-table scans in rounds 2 through log₂(h).
+  </div>
+</div>
+
+<!-- ==================== COMPARISON ==================== -->
+<div class="panel">
+  <h2>6. How the CircuitBuilder Avoids This</h2>
+
+  <p style="font-size:0.85em;">
+    The CircuitBuilder doesn't prove "round(input) = output" as a polynomial.
+    Instead, it expresses each AND gate as a constraint <code>A & B = C</code>,
+    giving ~600 AND constraints per Keccak permutation.
+  </p>
+
+  <div class="formula-box fb-blue">
+    CircuitBuilder AND constraint:  A(z,X) · B(z,X) - C(z,X) = 0
+    <br><br>
+    z indexes the 64 bit positions within a word (6 variables)
+    <br>X indexes the constraint (which AND gate, which instance)
+    <br><br>
+    Phase 1: collapse z (6 bit variables) into ONE scalar per word
+    <br>&nbsp;&nbsp;&nbsp;&nbsp;→ Method of Four Russians: 8 byte lookups per word → 1 field element
+    <br>&nbsp;&nbsp;&nbsp;&nbsp;→ Each word: 64 bits → 1 number. No 64× blowup.
+    <br><br>
+    Phase 2: sumcheck over X (constraint axis)
+    <br>&nbsp;&nbsp;&nbsp;&nbsp;→ Each constraint is just 1 field element. Compact.
+    <br>&nbsp;&nbsp;&nbsp;&nbsp;→ ONE pass over all 600h constraints. Not 24 sequential passes.
+  </div>
+
+  <p style="font-size:0.8em; margin-top:8px;">
+    The CircuitBuilder can collapse bits first because its per-gate polynomial is simple:
+    <code>A · B - C</code> — three values, one product. Easy to evaluate at 64 domain points.
+  </p>
+  <p style="font-size:0.8em;">
+    The GKR's polynomial is <code>chi(theta(rho(pi(input))))</code> — 25 lanes, rotations,
+    XOR mixing, AND gates fused together. Evaluating this at 64 domain points is 64× more expensive
+    than a single evaluation, which is why the "oblong" experiment regressed.
+  </p>
+
+  <table class="mle-table" style="margin-top:16px;">
+    <thead>
+      <tr>
+        <th></th>
+        <th>When bits become field elements</th>
+        <th>Data per instance after first fold</th>
+        <th>Number of passes over data</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="font-weight:700; color:#c62828;">GKR</td>
+        <td>After 1st sumcheck fold (each bit → 1 field element)</td>
+        <td style="color:#c62828; font-weight:700;">25 lanes × 64 = 25,600 bytes</td>
+        <td style="color:#c62828; font-weight:700;">24 sequential</td>
+      </tr>
+      <tr>
+        <td style="font-weight:700; color:#1565c0;">CircuitBuilder</td>
+        <td>Phase 1 collapses all bits → 1 element per word FIRST</td>
+        <td style="color:#1565c0; font-weight:700;">1 element per constraint = 16 bytes</td>
+        <td style="color:#1565c0; font-weight:700;">1 pass</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+</div><!-- end container -->
+
+<div style="text-align:center; margin-top:20px; font-size:0.7em; color:#bbb;">
+  Keccak GKR Sumcheck Walkthrough — Binius keccak-check
+</div>
+
+</body>
+</html>

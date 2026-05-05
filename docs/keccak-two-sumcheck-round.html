@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Keccak GKR — Two-Sumcheck Round (Conservative)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f8f9fa; padding: 40px 20px; }
+  h1 { text-align: center; color: #1a1a2e; margin-bottom: 8px; font-size: 1.6em; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 36px; font-size: 0.95em; }
+  .diagram { max-width: 960px; margin: 0 auto; position: relative; }
+
+  .lane-row {
+    display: flex; justify-content: center; gap: 4px; flex-wrap: wrap;
+    margin: 12px 0;
+  }
+  .lane-box {
+    width: 62px; height: 34px; border: 1.5px solid #333; border-radius: 4px;
+    font-size: 10px; display: flex; align-items: center; justify-content: center;
+    font-family: 'Courier New', monospace; font-weight: 600;
+  }
+  .lane-input { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+  .lane-prechi { background: #fff3e0; border-color: #e65100; color: #bf360c; }
+  .lane-output { background: #e3f2fd; border-color: #1565c0; color: #0d47a1; }
+  .lane-label {
+    text-align: center; font-size: 12px; font-weight: 700; margin: 4px 0 2px;
+    color: #444; letter-spacing: 0.5px;
+  }
+
+  .arrow-block {
+    display: flex; justify-content: center; margin: 6px 0;
+  }
+  .arrow-block svg { display: block; }
+
+  .sumcheck-box {
+    border: 2.5px solid; border-radius: 12px; padding: 20px 24px; margin: 16px 0;
+    position: relative;
+  }
+  .sumcheck-1 { border-color: #c62828; background: #fff5f5; }
+  .sumcheck-2 { border-color: #1565c0; background: #f0f7ff; }
+
+  .sc-header {
+    font-size: 15px; font-weight: 800; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .sc-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 20px;
+    font-size: 11px; font-weight: 700; color: #fff; letter-spacing: 0.5px;
+  }
+  .sc-badge-red { background: #c62828; }
+  .sc-badge-blue { background: #1565c0; }
+
+  .step-group { margin: 10px 0 6px; }
+  .step {
+    display: flex; align-items: flex-start; gap: 12px;
+    margin: 8px 0; padding: 8px 12px; border-radius: 8px;
+  }
+  .step-linear { background: rgba(21,101,192,0.07); }
+  .step-nonlinear { background: rgba(198,40,40,0.08); }
+  .step-free { background: rgba(56,142,60,0.07); }
+
+  .step-icon {
+    min-width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 13px; color: #fff; flex-shrink: 0;
+  }
+  .icon-linear { background: #1565c0; }
+  .icon-nonlinear { background: #c62828; }
+  .icon-free { background: #388e3c; }
+
+  .step-content { flex: 1; }
+  .step-name { font-weight: 700; font-size: 13px; color: #333; }
+  .step-formula {
+    font-family: 'Courier New', monospace; font-size: 12.5px; color: #555;
+    margin: 3px 0; line-height: 1.5;
+  }
+  .step-note { font-size: 11px; color: #888; font-style: italic; }
+  .highlight-mul { color: #c62828; font-weight: 800; }
+  .highlight-rot { color: #1565c0; font-weight: 700; }
+
+  .sc-result {
+    margin-top: 12px; padding: 10px 14px; border-radius: 8px;
+    font-size: 12.5px; line-height: 1.6;
+  }
+  .sc-result-red { background: rgba(198,40,40,0.08); border-left: 3px solid #c62828; }
+  .sc-result-blue { background: rgba(21,101,192,0.08); border-left: 3px solid #1565c0; }
+  .sc-result strong { color: #333; }
+
+  .interaction {
+    display: flex; justify-content: center; gap: 24px; margin: 10px 0;
+    font-size: 11.5px; color: #666;
+  }
+  .interaction span { display: flex; align-items: center; gap: 5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-v { background: #7b1fa2; }
+  .dot-p { background: #e65100; }
+
+  .chain-note {
+    text-align: center; margin: 20px 0 8px;
+    font-size: 13px; color: #555; font-style: italic;
+  }
+  .chain-arrow {
+    text-align: center; font-size: 20px; color: #999; margin: 4px 0;
+  }
+
+  .legend {
+    display: flex; justify-content: center; gap: 24px; margin: 24px 0 0;
+    flex-wrap: wrap;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #555; }
+  .legend-swatch {
+    width: 14px; height: 14px; border-radius: 3px; border: 1px solid #ccc;
+  }
+
+  .round-label {
+    position: absolute; right: -30px; top: 50%; transform: translateY(-50%) rotate(90deg);
+    font-size: 12px; font-weight: 700; color: #999; letter-spacing: 1px; white-space: nowrap;
+  }
+
+  .footer {
+    text-align: center; margin-top: 28px; font-size: 12px; color: #999;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<h1>Keccak GKR Round — Two-Sumcheck Approach (Conservative)</h1>
+<p class="subtitle">Each of the 24 identical rounds is proved with 2 sumchecks, working backwards from output to input.</p>
+
+<div class="diagram">
+
+  <!-- Output lanes -->
+  <div class="lane-label">Output State O<sup>(t)</sup> — 25 lanes &times; 64 bits</div>
+  <div class="lane-row">
+    <div class="lane-box lane-output">O[0,0]</div>
+    <div class="lane-box lane-output">O[0,1]</div>
+    <div class="lane-box lane-output">O[0,2]</div>
+    <div class="lane-box lane-output">O[0,3]</div>
+    <div class="lane-box lane-output">O[0,4]</div>
+    <div class="lane-box lane-output">O[1,0]</div>
+    <div class="lane-box lane-output" style="opacity:0.5">···</div>
+    <div class="lane-box lane-output">O[4,3]</div>
+    <div class="lane-box lane-output">O[4,4]</div>
+  </div>
+  <div class="chain-note">Verifier holds carried claim: C<sub>out</sub><sup>(t)</sup> = &sum;<sub>i,j</sub> &langle;O<sub>i,j</sub>, W<sub>i,j</sub>&rangle;</div>
+
+  <!-- Arrow down -->
+  <div class="arrow-block">
+    <svg width="40" height="30"><polygon points="20,28 8,8 32,8" fill="#c62828"/></svg>
+  </div>
+
+  <!-- ==================== SUMCHECK 1 ==================== -->
+  <div class="sumcheck-box sumcheck-1">
+    <div class="sc-header">
+      <span class="sc-badge sc-badge-red">SUMCHECK 1</span>
+      Degree 2 — Chi + Iota (nonlinear)
+    </div>
+    <div class="sc-header" style="font-size:12px; font-weight:400; color:#888; margin-bottom:4px;">
+      Reduces output claim → pre-chi claim &nbsp;|&nbsp; Prover sends <strong>2</strong> field elements per variable
+    </div>
+
+    <div class="step-group">
+      <div class="step step-linear">
+        <div class="step-icon icon-linear">&iota;</div>
+        <div class="step-content">
+          <div class="step-name">Iota (absorbed into chi)</div>
+          <div class="step-formula">O[0,0] = &chi;[0,0] &oplus; RC[t] &nbsp;&nbsp;|&nbsp;&nbsp; O[i,j] = &chi;[i,j] for (i,j) &ne; (0,0)</div>
+          <div class="step-note">LINEAR — XOR with known round constant, folded into the sumcheck integrand</div>
+        </div>
+      </div>
+      <div class="step step-nonlinear">
+        <div class="step-icon icon-nonlinear">&chi;</div>
+        <div class="step-content">
+          <div class="step-name">Chi (the only multiplication)</div>
+          <div class="step-formula">&chi;[i,j] = P[i,j] &oplus; P[i+2,j] &oplus; <span class="highlight-mul">P[i+1,j] &middot; P[i+2,j]</span></div>
+          <div class="step-note">DEGREE 2 — The AND gate that makes this sumcheck nonlinear</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="interaction">
+      <span><span class="dot dot-v"></span> Verifier samples challenge point &rho;<sub>t</sub></span>
+      <span><span class="dot dot-p"></span> Prover reveals 25 values P<sub>i,j</sub>(&rho;<sub>t</sub>)</span>
+    </div>
+
+    <div class="sc-result sc-result-red">
+      <strong>Result:</strong> Verifier now holds 25 claimed evaluations P<sup>(t)</sup><sub>i,j</sub>(&rho;<sub>t</sub>)
+      of the pre-chi state at a random point.<br>
+      These are <em>virtual point openings</em> — not yet verified. Sumcheck 2 will verify them.
+    </div>
+  </div>
+
+  <!-- Pre-chi lanes (intermediate) -->
+  <div class="lane-label">Pre-Chi State P<sup>(t)</sup> — 25 virtual lanes (never committed)</div>
+  <div class="lane-row">
+    <div class="lane-box lane-prechi">P[0,0]</div>
+    <div class="lane-box lane-prechi">P[0,1]</div>
+    <div class="lane-box lane-prechi">P[0,2]</div>
+    <div class="lane-box lane-prechi">P[0,3]</div>
+    <div class="lane-box lane-prechi">P[0,4]</div>
+    <div class="lane-box lane-prechi">P[1,0]</div>
+    <div class="lane-box lane-prechi" style="opacity:0.5">···</div>
+    <div class="lane-box lane-prechi">P[4,3]</div>
+    <div class="lane-box lane-prechi">P[4,4]</div>
+  </div>
+  <div class="chain-note">Verifier samples fresh weights &gamma;<sub>i,j</sub> and forms: C<sub>lin</sub><sup>(t)</sup> = &sum; &gamma;<sub>i,j</sub> P<sub>i,j</sub>(&rho;<sub>t</sub>)</div>
+
+  <!-- Arrow down -->
+  <div class="arrow-block">
+    <svg width="40" height="30"><polygon points="20,28 8,8 32,8" fill="#1565c0"/></svg>
+  </div>
+
+  <!-- ==================== SUMCHECK 2 ==================== -->
+  <div class="sumcheck-box sumcheck-2">
+    <div class="sc-header">
+      <span class="sc-badge sc-badge-blue">SUMCHECK 2</span>
+      Degree 1 — Theta + Rho + Pi (linear)
+    </div>
+    <div class="sc-header" style="font-size:12px; font-weight:400; color:#888; margin-bottom:4px;">
+      Reduces pre-chi claim → input claim &nbsp;|&nbsp; Prover sends <strong>1</strong> field element per variable
+    </div>
+
+    <div class="step-group">
+      <div class="step step-free">
+        <div class="step-icon icon-free">&pi;</div>
+        <div class="step-content">
+          <div class="step-name">Pi — Lane index permutation</div>
+          <div class="step-formula">P[&phi;(x,y)] = &rho;[x,y] &nbsp; where &phi;(x,y) = (y, (2x+3y) mod 5)</div>
+          <div class="step-note">FREE — Just relabeling lane indices, no computation</div>
+        </div>
+      </div>
+      <div class="step step-linear">
+        <div class="step-icon icon-linear">&rho;</div>
+        <div class="step-content">
+          <div class="step-name">Rho — Fixed bit rotation</div>
+          <div class="step-formula">&rho;[x,y] = <span class="highlight-rot">Rot</span>(&theta;[x,y], r[x,y])</div>
+          <div class="step-note">LINEAR — Cyclic rotation absorbed into sumcheck coefficients via rotation predicate</div>
+        </div>
+      </div>
+      <div class="step step-linear">
+        <div class="step-icon icon-linear">&theta;</div>
+        <div class="step-content">
+          <div class="step-name">Theta — Column parity mixing</div>
+          <div class="step-formula">&theta;[x,y] = A[x,y] &oplus; &sum;<sub>s</sub> A[x-1,s] &oplus; <span class="highlight-rot">Rot</span>(&sum;<sub>s</sub> A[x+1,s], 1)</div>
+          <div class="step-note">LINEAR — All XOR (= addition in F<sub>2</sub>), rotation is linear</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step" style="background: rgba(21,101,192,0.05); margin-top: 12px;">
+      <div class="step-content">
+        <div class="step-name" style="font-size: 12px;">Combined linear map (what the sumcheck actually proves):</div>
+        <div class="step-formula" style="font-size: 11.5px; line-height: 1.7;">
+          P<sub>&phi;(x,y)</sub> = <span class="highlight-rot">Rot</span>(A[x,y], r[x,y])
+          &oplus; &sum;<sub>s</sub> <span class="highlight-rot">Rot</span>(A[x-1,s], r[x,y])
+          &oplus; &sum;<sub>s</sub> <span class="highlight-rot">Rot</span>(A[x+1,s], r[x,y]+1)
+        </div>
+        <div class="step-note">Each P lane is a sum of ~11 rotated views of input lanes — entirely degree 1 in A</div>
+      </div>
+    </div>
+
+    <div class="interaction">
+      <span><span class="dot dot-v"></span> Verifier obtains new challenge point &alpha;<sub>t-1</sub></span>
+      <span><span class="dot dot-p"></span> Terminal check via transparent kernels K<sub>u,v</sub></span>
+    </div>
+
+    <div class="sc-result sc-result-blue">
+      <strong>Result:</strong> Claim reduced to 25 transparent linear relations on input lanes A<sup>(t)</sup><sub>u,v</sub>.<br>
+      Since A<sup>(t)</sup> = O<sup>(t-1)</sup>, these become the carried claims for <strong>round t-1</strong>.<br>
+      <span style="color:#1565c0; font-weight:700;">W<sup>(t-1)</sup><sub>u,v</sub> = K<sup>(t)</sup><sub>u,v;&alpha;,&gamma;</sub></span> — the new transparent kernels for the next round.
+    </div>
+  </div>
+
+  <!-- Arrow down -->
+  <div class="arrow-block">
+    <svg width="40" height="30"><polygon points="20,28 8,8 32,8" fill="#2e7d32"/></svg>
+  </div>
+
+  <!-- Input lanes -->
+  <div class="lane-label">Input State A<sup>(t)</sup> = Output of Round t-1 — 25 lanes &times; 64 bits</div>
+  <div class="lane-row">
+    <div class="lane-box lane-input">A[0,0]</div>
+    <div class="lane-box lane-input">A[0,1]</div>
+    <div class="lane-box lane-input">A[0,2]</div>
+    <div class="lane-box lane-input">A[0,3]</div>
+    <div class="lane-box lane-input">A[0,4]</div>
+    <div class="lane-box lane-input">A[1,0]</div>
+    <div class="lane-box lane-input" style="opacity:0.5">···</div>
+    <div class="lane-box lane-input">A[4,3]</div>
+    <div class="lane-box lane-input">A[4,4]</div>
+  </div>
+
+  <div class="chain-arrow">&darr;</div>
+  <div class="chain-note">
+    This becomes the <strong>output</strong> of round t-1. Repeat for rounds 23 &rarr; 22 &rarr; ··· &rarr; 0.<br>
+    At round 0, the input claims are checked against the <strong>committed</strong> initial state.
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background:#c62828"></div> Nonlinear (degree 2) — chi</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#1565c0"></div> Linear (degree 1) — theta, rho, iota</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#388e3c"></div> Free (degree 0) — pi</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#ff9800"></div> Virtual intermediate — never committed</div>
+  </div>
+
+  <!-- Summary table -->
+  <div style="margin-top: 32px; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+      <thead>
+        <tr style="background: #eee;">
+          <th style="padding: 10px 16px; text-align: left;">Property</th>
+          <th style="padding: 10px 16px; text-align: center;">Sumcheck 1 (Chi + Iota)</th>
+          <th style="padding: 10px 16px; text-align: center;">Sumcheck 2 (Theta + Rho + Pi)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td style="padding: 8px 16px; border-top: 1px solid #eee;">Polynomial degree</td>
+            <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee; color: #c62828; font-weight: 700;">2</td>
+            <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee; color: #1565c0; font-weight: 700;">1</td></tr>
+        <tr><td style="padding: 8px 16px; border-top: 1px solid #eee;">Field elements / variable</td>
+            <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee;">2</td>
+            <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee;">1</td></tr>
+        <tr><td style="padding: 8px 16px; border-top: 1px solid #eee;">Variables per sumcheck</td>
+            <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee;" colspan="2">n = 6 + log(h), where h = batch size</td></tr>
+        <tr><td style="padding: 8px 16px; border-top: 1px solid #eee;">Proof bytes / round (GF(2<sup>128</sup>))</td>
+            <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee;">32n bytes</td>
+            <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee;">16n bytes</td></tr>
+        <tr><td style="padding: 8px 16px; border-top: 1px solid #eee;">Total per Keccak-f (24 rounds)</td>
+            <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee;" colspan="2"><strong>48 sumchecks</strong>, 3n field elements / round = 72n total = 1152n bytes</td></tr>
+        <tr style="background: #f9f9f9;">
+          <td style="padding: 8px 16px; border-top: 1px solid #eee;">Reduces claim from</td>
+          <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee;">Output O → Pre-chi P</td>
+          <td style="padding: 8px 16px; text-align: center; border-top: 1px solid #eee;">Pre-chi P → Input A</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<div class="footer">
+  Binius GKR Keccak — Conservative Two-Sumcheck Design<br>
+  Based on <code>docs/keccak-gkr-design.md</code> and <code>crates/keccak-check/src/{chi_iota,linear_round}.rs</code>
+</div>
+
+</body>
+</html>

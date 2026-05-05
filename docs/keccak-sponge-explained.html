@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How Keccak Hashes a Message</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f5f5f5; padding: 20px; color: #333; }
+  h1 { text-align: center; margin-bottom: 4px; font-size: 1.5em; color: #1a1a2e; }
+  h2 { font-size: 1.15em; color: #1a1a2e; margin: 20px 0 10px; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 28px; font-size: 0.85em; }
+  .container { max-width: 900px; margin: 0 auto; }
+  .panel {
+    background: #fff; border-radius: 12px; padding: 20px; margin: 16px 0;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+  .note { font-size: 0.8em; color: #777; margin-top: 8px; line-height: 1.5; }
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+</style>
+</head>
+<body>
+
+<h1>How Keccak Hashes a Message</h1>
+<p class="subtitle">From a plaintext message to a 256-bit hash, step by step with diagrams.</p>
+
+<div class="container">
+
+<!-- ==================== 1. THE STATE ==================== -->
+<div class="panel">
+  <h2>1. The Keccak State: A 1600-Bit Box</h2>
+  <p style="font-size:0.9em; margin-bottom:12px;">
+    Keccak's internal state is 1600 bits, organized as a 5 &times; 5 grid of 64-bit "lanes."
+    It's split into two regions:
+  </p>
+
+  <svg viewBox="0 0 700 200" style="max-width:700px; display:block; margin:0 auto;">
+    <!-- Rate region -->
+    <rect x="20" y="30" width="440" height="140" rx="8" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+    <text x="240" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#1565c0">Rate (1088 bits = 136 bytes)</text>
+    <text x="240" y="55" text-anchor="middle" font-size="11" fill="#0d47a1">Message data goes IN here</text>
+    <text x="240" y="75" text-anchor="middle" font-size="11" fill="#0d47a1">Hash output is read FROM here</text>
+
+    <!-- Lanes inside rate -->
+    <g transform="translate(40, 90)">
+      <rect x="0" y="0" width="38" height="24" rx="3" fill="#bbdefb" stroke="#1565c0" stroke-width="1"/>
+      <text x="19" y="16" text-anchor="middle" font-size="8" font-weight="600" fill="#0d47a1">lane 0</text>
+      <rect x="42" y="0" width="38" height="24" rx="3" fill="#bbdefb" stroke="#1565c0" stroke-width="1"/>
+      <text x="61" y="16" text-anchor="middle" font-size="8" font-weight="600" fill="#0d47a1">lane 1</text>
+      <rect x="84" y="0" width="38" height="24" rx="3" fill="#bbdefb" stroke="#1565c0" stroke-width="1"/>
+      <text x="103" y="16" text-anchor="middle" font-size="8" font-weight="600" fill="#0d47a1">lane 2</text>
+      <text x="140" y="16" font-size="14" fill="#90caf9">...</text>
+      <rect x="160" y="0" width="38" height="24" rx="3" fill="#bbdefb" stroke="#1565c0" stroke-width="1"/>
+      <text x="179" y="16" text-anchor="middle" font-size="7" font-weight="600" fill="#0d47a1">lane 16</text>
+      <text x="240" y="16" font-size="11" fill="#1565c0" font-style="italic">17 lanes (1088 bits)</text>
+    </g>
+
+    <!-- Capacity region -->
+    <rect x="470" y="30" width="210" height="140" rx="8" fill="#fce4ec" stroke="#c62828" stroke-width="2"/>
+    <text x="575" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#c62828">Capacity (512 bits)</text>
+    <text x="575" y="55" text-anchor="middle" font-size="11" fill="#b71c1c">Never directly exposed</text>
+    <text x="575" y="75" text-anchor="middle" font-size="11" fill="#b71c1c">in the hash output</text>
+
+    <g transform="translate(490, 90)">
+      <rect x="0" y="0" width="38" height="24" rx="3" fill="#f8bbd0" stroke="#c62828" stroke-width="1"/>
+      <text x="19" y="16" text-anchor="middle" font-size="7" font-weight="600" fill="#880e4f">lane 17</text>
+      <text x="48" y="16" font-size="14" fill="#f48fb1">...</text>
+      <rect x="66" y="0" width="38" height="24" rx="3" fill="#f8bbd0" stroke="#c62828" stroke-width="1"/>
+      <text x="85" y="16" text-anchor="middle" font-size="7" font-weight="600" fill="#880e4f">lane 24</text>
+      <text x="140" y="16" font-size="11" fill="#c62828" font-style="italic">8 lanes (512 bits)</text>
+    </g>
+
+    <!-- Bottom label -->
+    <text x="350" y="190" text-anchor="middle" font-size="12" fill="#555">Total: 25 lanes &times; 64 bits = 1600 bits</text>
+  </svg>
+
+  <p class="note">
+    The rate is where data enters and exits. The capacity adds internal complexity
+    that makes the hash secure. Together they form the full 1600-bit state.
+  </p>
+</div>
+
+<!-- ==================== 2. SHORT MESSAGE ==================== -->
+<div class="panel">
+  <h2>2. Hashing a Short Message (fits in one block)</h2>
+  <p style="font-size:0.9em; margin-bottom:12px;">
+    Message: <strong>"Hello"</strong> (5 bytes = 40 bits). This fits in one rate block (136 bytes).
+  </p>
+
+  <!-- Step-by-step SVG -->
+  <svg viewBox="0 0 700 620" style="max-width:700px; display:block; margin:0 auto;">
+
+    <!-- STEP 0: Initial state -->
+    <text x="20" y="20" font-size="13" font-weight="700" fill="#333">Step 0: Start with all-zero state</text>
+    <rect x="20" y="30" width="440" height="40" rx="6" fill="#e8f5e9" stroke="#66bb6a" stroke-width="1.5"/>
+    <text x="240" y="55" text-anchor="middle" font-size="11" fill="#2e7d32">Rate: 0000000000...0000 (1088 zeros)</text>
+    <rect x="470" y="30" width="210" height="40" rx="6" fill="#e8f5e9" stroke="#66bb6a" stroke-width="1.5"/>
+    <text x="575" y="55" text-anchor="middle" font-size="11" fill="#2e7d32">Capacity: 0000...0000 (512 zeros)</text>
+
+    <!-- Arrow -->
+    <line x1="350" y1="75" x2="350" y2="100" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- STEP 1: XOR message -->
+    <text x="20" y="115" font-size="13" font-weight="700" fill="#333">Step 1: XOR padded message into the rate</text>
+    <rect x="20" y="125" width="440" height="55" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="40" y="145" font-size="10" fill="#0d47a1">"Hello" + padding (136 bytes total)</text>
+    <text x="40" y="162" font-size="10" fill="#0d47a1" font-weight="700">XOR'd into rate: 48656C6C6F01...80 (message + pad bytes)</text>
+    <text x="240" y="175" text-anchor="middle" font-size="9" fill="#1565c0" font-style="italic">Only the rate portion is modified</text>
+
+    <rect x="470" y="125" width="210" height="55" rx="6" fill="#e8f5e9" stroke="#66bb6a" stroke-width="1.5"/>
+    <text x="575" y="155" text-anchor="middle" font-size="11" fill="#2e7d32">Capacity: still all zeros</text>
+    <text x="575" y="172" text-anchor="middle" font-size="9" fill="#2e7d32" font-style="italic">Message never touches here</text>
+
+    <!-- Arrow -->
+    <line x1="350" y1="185" x2="350" y2="210" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- STEP 2: keccak-f -->
+    <text x="20" y="225" font-size="13" font-weight="700" fill="#333">Step 2: Apply keccak-f permutation (24 rounds)</text>
+    <rect x="80" y="235" width="540" height="80" rx="10" fill="#fff3e0" stroke="#e65100" stroke-width="2.5"/>
+
+    <!-- Round boxes inside -->
+    <g transform="translate(100, 250)">
+      <rect x="0" y="0" width="60" height="50" rx="4" fill="#ffe0b2" stroke="#e65100" stroke-width="1"/>
+      <text x="30" y="18" text-anchor="middle" font-size="9" font-weight="700" fill="#bf360c">Round 0</text>
+      <text x="30" y="30" text-anchor="middle" font-size="7" fill="#e65100">&theta; &rho; &pi; &chi; &iota;</text>
+      <text x="30" y="42" text-anchor="middle" font-size="7" fill="#e65100">RC[0]</text>
+
+      <text x="70" y="28" font-size="14" fill="#e65100">&rarr;</text>
+
+      <rect x="85" y="0" width="60" height="50" rx="4" fill="#ffe0b2" stroke="#e65100" stroke-width="1"/>
+      <text x="115" y="18" text-anchor="middle" font-size="9" font-weight="700" fill="#bf360c">Round 1</text>
+      <text x="115" y="30" text-anchor="middle" font-size="7" fill="#e65100">&theta; &rho; &pi; &chi; &iota;</text>
+      <text x="115" y="42" text-anchor="middle" font-size="7" fill="#e65100">RC[1]</text>
+
+      <text x="155" y="28" font-size="14" fill="#e65100">&rarr;</text>
+      <text x="180" y="28" font-size="14" fill="#ccc">...</text>
+      <text x="210" y="28" font-size="14" fill="#e65100">&rarr;</text>
+
+      <rect x="225" y="0" width="60" height="50" rx="4" fill="#ffe0b2" stroke="#e65100" stroke-width="1"/>
+      <text x="255" y="18" text-anchor="middle" font-size="9" font-weight="700" fill="#bf360c">Round 23</text>
+      <text x="255" y="30" text-anchor="middle" font-size="7" fill="#e65100">&theta; &rho; &pi; &chi; &iota;</text>
+      <text x="255" y="42" text-anchor="middle" font-size="7" fill="#e65100">RC[23]</text>
+    </g>
+
+    <text x="500" y="280" font-size="10" fill="#e65100" font-weight="700">All 1600 bits</text>
+    <text x="500" y="295" font-size="10" fill="#e65100" font-weight="700">get thoroughly</text>
+    <text x="500" y="310" font-size="10" fill="#e65100" font-weight="700">scrambled!</text>
+
+    <!-- Arrow -->
+    <line x1="350" y1="320" x2="350" y2="345" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- STEP 3: Read output -->
+    <text x="20" y="360" font-size="13" font-weight="700" fill="#333">Step 3: Read hash from rate (first 256 bits)</text>
+
+    <rect x="20" y="370" width="440" height="65" rx="6" fill="#e8eaf6" stroke="#3f51b5" stroke-width="1.5"/>
+    <!-- Hash portion -->
+    <rect x="30" y="380" width="160" height="30" rx="4" fill="#7986cb" stroke="#283593" stroke-width="2"/>
+    <text x="110" y="400" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">HASH OUTPUT (256 bits)</text>
+    <!-- Rest of rate -->
+    <rect x="200" y="380" width="250" height="30" rx="4" fill="#c5cae9" stroke="#5c6bc0" stroke-width="1"/>
+    <text x="325" y="400" text-anchor="middle" font-size="9" fill="#283593">remaining rate bits (832 bits) &mdash; discarded</text>
+    <text x="240" y="428" text-anchor="middle" font-size="9" fill="#3f51b5" font-style="italic">These bits are all deterministic (computed from the message)</text>
+
+    <rect x="470" y="370" width="210" height="65" rx="6" fill="#fce4ec" stroke="#c62828" stroke-width="1.5"/>
+    <text x="575" y="395" text-anchor="middle" font-size="10" font-weight="700" fill="#c62828">Capacity bits exist</text>
+    <text x="575" y="412" text-anchor="middle" font-size="10" fill="#c62828">but are NEVER output</text>
+    <text x="575" y="428" text-anchor="middle" font-size="9" fill="#c62828" font-style="italic">Also deterministic, just not revealed</text>
+
+    <!-- Final output -->
+    <line x1="110" y1="440" x2="110" y2="465" stroke="#283593" stroke-width="2" marker-end="url(#arrow-blue)"/>
+    <rect x="20" y="468" width="180" height="35" rx="6" fill="#283593"/>
+    <text x="110" y="490" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">Keccak-256("Hello")</text>
+
+    <!-- Side note -->
+    <rect x="240" y="468" width="440" height="55" rx="6" fill="#fff9c4" stroke="#f9a825" stroke-width="1.5"/>
+    <text x="260" y="486" font-size="10" font-weight="700" fill="#f57f17">Everything is deterministic!</text>
+    <text x="260" y="502" font-size="9" fill="#795548">Given "Hello", anyone computes the exact same 1600-bit state.</text>
+    <text x="260" y="516" font-size="9" fill="#795548">The capacity bits are fully determined &mdash; just not included in the output.</text>
+
+    <!-- Arrow markers -->
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#999"/>
+      </marker>
+      <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#283593"/>
+      </marker>
+      <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#c62828"/>
+      </marker>
+    </defs>
+  </svg>
+
+  <p style="font-size:0.85em; margin-top:8px;">
+    This entire process is <strong>one keccak-f call = one "instance"</strong> in the batch prover.
+  </p>
+</div>
+
+<!-- ==================== 3. LONG MESSAGE ==================== -->
+<div class="panel">
+  <h2>3. Hashing a Long Message (multiple blocks)</h2>
+  <p style="font-size:0.9em; margin-bottom:12px;">
+    Message: 300 bytes. Rate = 136 bytes. So we need 3 blocks:
+    Block 1 (bytes 0-135), Block 2 (bytes 136-271), Block 3 (bytes 272-299 + padding).
+  </p>
+
+  <svg viewBox="0 0 700 420" style="max-width:700px; display:block; margin:0 auto;">
+    <!-- Block 1 -->
+    <rect x="10" y="10" width="200" height="130" rx="8" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+    <text x="110" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#0d47a1">Block 1 (bytes 0-135)</text>
+
+    <rect x="25" y="40" width="170" height="22" rx="3" fill="#e8f5e9" stroke="#66bb6a" stroke-width="1"/>
+    <text x="110" y="55" text-anchor="middle" font-size="9" fill="#2e7d32">State: all zeros</text>
+
+    <text x="110" y="72" text-anchor="middle" font-size="9" fill="#1565c0">XOR block 1 into rate</text>
+    <text x="110" y="84" text-anchor="middle" font-size="10" fill="#1565c0">&darr;</text>
+
+    <rect x="25" y="88" width="170" height="22" rx="3" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+    <text x="110" y="103" text-anchor="middle" font-size="9" font-weight="700" fill="#e65100">keccak-f (instance A)</text>
+
+    <text x="110" y="120" text-anchor="middle" font-size="10" fill="#e65100">&darr;</text>
+    <rect x="25" y="122" width="170" height="16" rx="3" fill="#c8e6c9" stroke="#43a047" stroke-width="1"/>
+    <text x="110" y="134" text-anchor="middle" font-size="8" fill="#2e7d32">State 1 (all 1600 bits changed)</text>
+
+    <!-- Arrow between blocks -->
+    <line x1="210" y1="130" x2="240" y2="130" stroke="#e65100" stroke-width="2" marker-end="url(#arrow-red)"/>
+    <text x="225" y="120" text-anchor="middle" font-size="8" fill="#c62828" transform="rotate(-90, 225, 120)">chain</text>
+
+    <!-- Block 2 -->
+    <rect x="245" y="10" width="200" height="130" rx="8" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+    <text x="345" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#0d47a1">Block 2 (bytes 136-271)</text>
+
+    <rect x="260" y="40" width="170" height="22" rx="3" fill="#c8e6c9" stroke="#43a047" stroke-width="1"/>
+    <text x="345" y="55" text-anchor="middle" font-size="9" fill="#2e7d32">State 1 (from block 1)</text>
+
+    <text x="345" y="72" text-anchor="middle" font-size="9" fill="#1565c0">XOR block 2 into rate</text>
+    <text x="345" y="84" text-anchor="middle" font-size="10" fill="#1565c0">&darr;</text>
+
+    <rect x="260" y="88" width="170" height="22" rx="3" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+    <text x="345" y="103" text-anchor="middle" font-size="9" font-weight="700" fill="#e65100">keccak-f (instance B)</text>
+
+    <text x="345" y="120" text-anchor="middle" font-size="10" fill="#e65100">&darr;</text>
+    <rect x="260" y="122" width="170" height="16" rx="3" fill="#c8e6c9" stroke="#43a047" stroke-width="1"/>
+    <text x="345" y="134" text-anchor="middle" font-size="8" fill="#2e7d32">State 2</text>
+
+    <!-- Arrow between blocks -->
+    <line x1="445" y1="130" x2="475" y2="130" stroke="#e65100" stroke-width="2" marker-end="url(#arrow-red)"/>
+
+    <!-- Block 3 -->
+    <rect x="480" y="10" width="200" height="130" rx="8" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+    <text x="580" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#0d47a1">Block 3 (bytes 272-299+pad)</text>
+
+    <rect x="495" y="40" width="170" height="22" rx="3" fill="#c8e6c9" stroke="#43a047" stroke-width="1"/>
+    <text x="580" y="55" text-anchor="middle" font-size="9" fill="#2e7d32">State 2 (from block 2)</text>
+
+    <text x="580" y="72" text-anchor="middle" font-size="9" fill="#1565c0">XOR block 3 into rate</text>
+    <text x="580" y="84" text-anchor="middle" font-size="10" fill="#1565c0">&darr;</text>
+
+    <rect x="495" y="88" width="170" height="22" rx="3" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+    <text x="580" y="103" text-anchor="middle" font-size="9" font-weight="700" fill="#e65100">keccak-f (instance C)</text>
+
+    <text x="580" y="120" text-anchor="middle" font-size="10" fill="#e65100">&darr;</text>
+    <rect x="495" y="122" width="170" height="16" rx="3" fill="#7986cb" stroke="#283593" stroke-width="1.5"/>
+    <text x="580" y="134" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">State 3 &rarr; read hash</text>
+
+    <!-- Dependency note -->
+    <rect x="10" y="160" width="670" height="50" rx="6" fill="#ffebee" stroke="#c62828" stroke-width="1.5"/>
+    <text x="345" y="178" text-anchor="middle" font-size="11" font-weight="700" fill="#c62828">
+      These 3 instances are DEPENDENT (chained):
+    </text>
+    <text x="345" y="196" text-anchor="middle" font-size="10" fill="#b71c1c">
+      Instance B's input = Instance A's output. Instance C's input = Instance B's output.
+    </text>
+
+    <!-- Batch note -->
+    <text x="20" y="240" font-size="13" font-weight="700" fill="#333">Can we batch these? NO &mdash; they are chained.</text>
+    <text x="20" y="258" font-size="10" fill="#555">Each keccak-f depends on the previous one's result. Must be proved sequentially.</text>
+
+    <!-- Independent instances -->
+    <text x="20" y="295" font-size="13" font-weight="700" fill="#333">What CAN be batched: independent hashes of different messages</text>
+
+    <g transform="translate(10, 310)">
+      <rect x="0" y="0" width="160" height="90" rx="6" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5"/>
+      <text x="80" y="18" text-anchor="middle" font-size="10" font-weight="700" fill="#2e7d32">Message "Alice"</text>
+      <rect x="15" y="28" width="130" height="18" rx="3" fill="#fff3e0" stroke="#e65100" stroke-width="1"/>
+      <text x="80" y="41" text-anchor="middle" font-size="9" fill="#e65100">keccak-f (instance 0)</text>
+      <text x="80" y="60" text-anchor="middle" font-size="9" fill="#2e7d32">&darr; hash&sub1;</text>
+
+      <rect x="175" y="0" width="160" height="90" rx="6" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5"/>
+      <text x="255" y="18" text-anchor="middle" font-size="10" font-weight="700" fill="#2e7d32">Message "Bob"</text>
+      <rect x="190" y="28" width="130" height="18" rx="3" fill="#fff3e0" stroke="#e65100" stroke-width="1"/>
+      <text x="255" y="41" text-anchor="middle" font-size="9" fill="#e65100">keccak-f (instance 1)</text>
+      <text x="255" y="60" text-anchor="middle" font-size="9" fill="#2e7d32">&darr; hash&sub2;</text>
+
+      <rect x="350" y="0" width="160" height="90" rx="6" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5"/>
+      <text x="430" y="18" text-anchor="middle" font-size="10" font-weight="700" fill="#2e7d32">Message "Carol"</text>
+      <rect x="365" y="28" width="130" height="18" rx="3" fill="#fff3e0" stroke="#e65100" stroke-width="1"/>
+      <text x="430" y="41" text-anchor="middle" font-size="9" fill="#e65100">keccak-f (instance 2)</text>
+      <text x="430" y="60" text-anchor="middle" font-size="9" fill="#2e7d32">&darr; hash&sub3;</text>
+
+      <text x="530" y="40" font-size="18" fill="#ccc">...</text>
+    </g>
+
+    <rect x="10" y="410" width="670" height="30" rx="6" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5"/>
+    <text x="345" y="430" text-anchor="middle" font-size="11" font-weight="700" fill="#2e7d32">
+      These are INDEPENDENT &mdash; can be batch-proved as h instances!
+    </text>
+  </svg>
+</div>
+
+<!-- ==================== 4. WHAT KECCAK-F DOES ==================== -->
+<div class="panel">
+  <h2>4. What One keccak-f Permutation Does (One Instance)</h2>
+  <p style="font-size:0.9em; margin-bottom:12px;">
+    Each keccak-f takes 1600 bits in and produces 1600 bits out, through 24 identical rounds.
+    Each round applies 5 steps to the 5&times;5 grid of 64-bit lanes:
+  </p>
+
+  <svg viewBox="0 0 700 340" style="max-width:700px; display:block; margin:0 auto;">
+    <!-- Input state -->
+    <rect x="20" y="10" width="100" height="50" rx="6" fill="#c8e6c9" stroke="#43a047" stroke-width="2"/>
+    <text x="70" y="30" text-anchor="middle" font-size="10" font-weight="700" fill="#2e7d32">Input</text>
+    <text x="70" y="45" text-anchor="middle" font-size="8" fill="#2e7d32">1600 bits</text>
+
+    <line x1="120" y1="35" x2="145" y2="35" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- Theta -->
+    <rect x="150" y="5" width="90" height="60" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="195" y="25" text-anchor="middle" font-size="11" font-weight="700" fill="#1565c0">&theta; Theta</text>
+    <text x="195" y="40" text-anchor="middle" font-size="8" fill="#0d47a1">XOR column</text>
+    <text x="195" y="52" text-anchor="middle" font-size="8" fill="#0d47a1">parities + mix</text>
+
+    <line x1="240" y1="35" x2="255" y2="35" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- Rho -->
+    <rect x="260" y="5" width="70" height="60" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="295" y="25" text-anchor="middle" font-size="11" font-weight="700" fill="#1565c0">&rho; Rho</text>
+    <text x="295" y="40" text-anchor="middle" font-size="8" fill="#0d47a1">Rotate bits</text>
+    <text x="295" y="52" text-anchor="middle" font-size="8" fill="#0d47a1">within lanes</text>
+
+    <line x1="330" y1="35" x2="345" y2="35" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- Pi -->
+    <rect x="350" y="5" width="60" height="60" rx="6" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5"/>
+    <text x="380" y="25" text-anchor="middle" font-size="11" font-weight="700" fill="#2e7d32">&pi; Pi</text>
+    <text x="380" y="40" text-anchor="middle" font-size="8" fill="#2e7d32">Shuffle</text>
+    <text x="380" y="52" text-anchor="middle" font-size="8" fill="#2e7d32">lane positions</text>
+
+    <line x1="410" y1="35" x2="425" y2="35" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- Chi -->
+    <rect x="430" y="5" width="90" height="60" rx="6" fill="#ffebee" stroke="#c62828" stroke-width="2"/>
+    <text x="475" y="25" text-anchor="middle" font-size="11" font-weight="700" fill="#c62828">&chi; Chi</text>
+    <text x="475" y="40" text-anchor="middle" font-size="8" fill="#b71c1c">AND + XOR</text>
+    <text x="475" y="52" text-anchor="middle" font-size="8" fill="#b71c1c" font-weight="700">ONLY nonlinear!</text>
+
+    <line x1="520" y1="35" x2="535" y2="35" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- Iota -->
+    <rect x="540" y="5" width="70" height="60" rx="6" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="1.5"/>
+    <text x="575" y="25" text-anchor="middle" font-size="11" font-weight="700" fill="#6a1b9a">&iota; Iota</text>
+    <text x="575" y="40" text-anchor="middle" font-size="8" fill="#6a1b9a">Add round</text>
+    <text x="575" y="52" text-anchor="middle" font-size="8" fill="#6a1b9a">constant</text>
+
+    <line x1="610" y1="35" x2="635" y2="35" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- Output -->
+    <rect x="640" y="10" width="50" height="50" rx="6" fill="#c8e6c9" stroke="#43a047" stroke-width="2"/>
+    <text x="665" y="30" text-anchor="middle" font-size="9" font-weight="700" fill="#2e7d32">Out</text>
+    <text x="665" y="45" text-anchor="middle" font-size="8" fill="#2e7d32">1600b</text>
+
+    <!-- Label -->
+    <text x="350" y="85" text-anchor="middle" font-size="10" fill="#888">One round. Repeated 24 times with different round constants RC[0]...RC[23].</text>
+
+    <!-- What each step does to data -->
+    <text x="20" y="115" font-size="12" font-weight="700" fill="#333">What each step does to the bits:</text>
+
+    <!-- Theta detail -->
+    <rect x="20" y="130" width="660" height="40" rx="4" fill="#f0f7ff" stroke="#1565c0" stroke-width="1"/>
+    <text x="30" y="148" font-size="10" font-weight="700" fill="#1565c0">&theta;</text>
+    <text x="50" y="148" font-size="10" fill="#333">Each lane XORed with its column parity and rotated neighbor parity.</text>
+    <text x="50" y="163" font-size="9" fill="#888">Operation: XOR only (linear). Every lane depends on ALL lanes in its column + neighbor columns.</text>
+
+    <!-- Rho detail -->
+    <rect x="20" y="175" width="660" height="30" rx="4" fill="#f0f7ff" stroke="#1565c0" stroke-width="1"/>
+    <text x="30" y="195" font-size="10" font-weight="700" fill="#1565c0">&rho;</text>
+    <text x="50" y="195" font-size="10" fill="#333">Rotate bits within each lane by a fixed offset (0, 1, 3, 6, 10, 15, ...).</text>
+
+    <!-- Pi detail -->
+    <rect x="20" y="210" width="660" height="30" rx="4" fill="#f0fff0" stroke="#43a047" stroke-width="1"/>
+    <text x="30" y="230" font-size="10" font-weight="700" fill="#2e7d32">&pi;</text>
+    <text x="50" y="230" font-size="10" fill="#333">Shuffle which lane sits at which (x,y) position. No bits change, just addresses.</text>
+
+    <!-- Chi detail -->
+    <rect x="20" y="245" width="660" height="45" rx="4" fill="#fff5f5" stroke="#c62828" stroke-width="1.5"/>
+    <text x="30" y="263" font-size="10" font-weight="700" fill="#c62828">&chi;</text>
+    <text x="50" y="263" font-size="10" fill="#333">out[x] = in[x] XOR ((NOT in[x+1]) AND in[x+2]). The AND makes it nonlinear!</text>
+    <text x="50" y="280" font-size="9" fill="#c62828" font-weight="700">This is the ONLY step that has multiplication (AND). Everything else is just XOR / permutation.</text>
+
+    <!-- Iota detail -->
+    <rect x="20" y="295" width="660" height="30" rx="4" fill="#faf0ff" stroke="#7b1fa2" stroke-width="1"/>
+    <text x="30" y="315" font-size="10" font-weight="700" fill="#6a1b9a">&iota;</text>
+    <text x="50" y="315" font-size="10" fill="#333">XOR a fixed round constant into lane (0,0). Makes each of the 24 rounds different.</text>
+  </svg>
+
+  <p class="note">
+    After 24 rounds of this, every output bit depends on every input bit in a complex,
+    unpredictable way. This is what makes Keccak a secure hash function.
+  </p>
+</div>
+
+<!-- ==================== 5. BATCHING ==================== -->
+<div class="panel">
+  <h2>5. How Batch Proving Works</h2>
+  <p style="font-size:0.9em; margin-bottom:12px;">
+    When we have h <strong>independent</strong> keccak-f calls (e.g., hashing h different messages),
+    we can prove all of them in one proof by stacking them together:
+  </p>
+
+  <svg viewBox="0 0 700 200" style="max-width:700px; display:block; margin:0 auto;">
+    <!-- Stack of instances -->
+    <rect x="20" y="10" width="300" height="35" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="170" y="32" text-anchor="middle" font-size="10" fill="#0d47a1">Instance 0: lane A[0,0] = 0x1234...ABCD (64 bits)</text>
+
+    <rect x="20" y="48" width="300" height="35" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="170" y="70" text-anchor="middle" font-size="10" fill="#0d47a1">Instance 1: lane A[0,0] = 0x5678...EF01 (64 bits)</text>
+
+    <rect x="20" y="86" width="300" height="35" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="170" y="108" text-anchor="middle" font-size="10" fill="#0d47a1">Instance 2: lane A[0,0] = 0x9ABC...2345 (64 bits)</text>
+
+    <text x="170" y="138" text-anchor="middle" font-size="14" fill="#bbb">...</text>
+
+    <rect x="20" y="148" width="300" height="35" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="170" y="170" text-anchor="middle" font-size="10" fill="#0d47a1">Instance h-1: lane A[0,0] = 0xDEF0...6789</text>
+
+    <!-- Arrow to MLE -->
+    <line x1="330" y1="100" x2="380" y2="100" stroke="#1565c0" stroke-width="2" marker-end="url(#arrow-blue)"/>
+
+    <!-- MLE box -->
+    <rect x="385" y="30" width="290" height="140" rx="8" fill="#e8eaf6" stroke="#3f51b5" stroke-width="2"/>
+    <text x="530" y="55" text-anchor="middle" font-size="11" font-weight="700" fill="#283593">Multilinear Extension (MLE)</text>
+    <text x="530" y="78" text-anchor="middle" font-size="10" fill="#3f51b5">A[0,0](v&sub1;,...,v&sub6;, v&sub7;,...,v&subN;)</text>
+    <text x="530" y="98" text-anchor="middle" font-size="9" fill="#555">v&sub1;...v&sub6; = which of 64 bits</text>
+    <text x="530" y="115" text-anchor="middle" font-size="9" fill="#555">v&sub7;...v&subN; = which of h instances</text>
+    <text x="530" y="140" text-anchor="middle" font-size="9" fill="#283593" font-style="italic">One polynomial encodes ALL instances</text>
+    <text x="530" y="158" text-anchor="middle" font-size="9" fill="#283593" font-style="italic">of this lane. The sumcheck operates on it.</text>
+
+    <defs>
+      <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#1565c0"/>
+      </marker>
+    </defs>
+  </svg>
+
+  <p style="font-size:0.85em; margin-top:8px;">
+    The sumcheck then proves "keccak round(input) = output" for ALL h instances at once,
+    by working on this polynomial. One proof covers everything.
+  </p>
+</div>
+
+</div><!-- container -->
+</body>
+</html>

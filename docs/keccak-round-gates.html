@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Keccak Round — Gate-Level Circuit</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f8f9fa; padding: 30px 20px; }
+  h1 { text-align: center; color: #1a1a2e; margin-bottom: 4px; font-size: 1.5em; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 20px; font-size: 0.9em; line-height: 1.6; }
+  .diagram { max-width: 1100px; margin: 0 auto; }
+
+  .section {
+    border: 2px solid #ddd; border-radius: 10px; padding: 18px 20px;
+    margin: 14px 0; position: relative; background: #fff;
+  }
+  .section-label {
+    position: absolute; top: -11px; left: 20px;
+    background: #fff; padding: 0 8px; font-weight: 700;
+    font-size: 13px; letter-spacing: 0.5px;
+  }
+  .section-note {
+    font-size: 11.5px; color: #888; margin-bottom: 12px; font-style: italic;
+  }
+  .s-theta { border-color: #1565c0; }
+  .s-theta .section-label { color: #1565c0; }
+  .s-rho { border-color: #00838f; }
+  .s-rho .section-label { color: #00838f; }
+  .s-pi { border-color: #388e3c; }
+  .s-pi .section-label { color: #388e3c; }
+  .s-chi { border-color: #c62828; }
+  .s-chi .section-label { color: #c62828; }
+  .s-iota { border-color: #6a1b9a; }
+  .s-iota .section-label { color: #6a1b9a; }
+
+  svg text { font-family: 'Courier New', monospace; }
+
+  .cost-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px;
+    font-size: 11px; font-weight: 700; color: #fff; margin-left: 8px;
+  }
+  .cost-xor { background: #1565c0; }
+  .cost-and { background: #c62828; }
+  .cost-free { background: #388e3c; }
+  .cost-rot { background: #00838f; }
+
+  .legend {
+    display: flex; gap: 20px; justify-content: center; margin: 16px 0;
+    flex-wrap: wrap; font-size: 12px; color: #555;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-gate {
+    width: 28px; height: 22px; border-radius: 11px; display: flex;
+    align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 800; color: #fff;
+  }
+
+  .arrow-down { text-align: center; font-size: 20px; color: #bbb; margin: 4px 0; }
+
+  .io-bar {
+    display: flex; justify-content: center; gap: 6px; flex-wrap: wrap;
+    margin: 8px 0; padding: 10px; border-radius: 8px;
+  }
+  .io-bar-in { background: #e8f5e9; border: 2px solid #2e7d32; }
+  .io-bar-out { background: #e3f2fd; border: 2px solid #1565c0; }
+  .io-bar-mid { background: #fff3e0; border: 2px solid #e65100; }
+  .io-bar-label {
+    width: 100%; text-align: center; font-size: 12px; font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .io-bar-in .io-bar-label { color: #1b5e20; }
+  .io-bar-out .io-bar-label { color: #0d47a1; }
+  .io-bar-mid .io-bar-label { color: #bf360c; }
+  .lane-box {
+    width: 62px; height: 28px; border-radius: 4px;
+    font-size: 10px; display: flex; align-items: center; justify-content: center;
+    font-family: 'Courier New', monospace; font-weight: 600; border: 1.5px solid;
+  }
+  .lane-in { background: #c8e6c9; border-color: #2e7d32; color: #1b5e20; }
+  .lane-out { background: #bbdefb; border-color: #1565c0; color: #0d47a1; }
+  .lane-mid { background: #ffe0b2; border-color: #e65100; color: #bf360c; }
+
+  .summary-table {
+    width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px;
+  }
+  .summary-table th, .summary-table td {
+    padding: 8px 14px; border: 1px solid #ddd; text-align: center;
+  }
+  .summary-table th { background: #f0f0f0; font-weight: 700; }
+  .summary-table td:first-child { text-align: left; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>Keccak-f Round — Gate-Level Circuit</h1>
+<p class="subtitle">
+  One round of Keccak-f[1600] operates on <strong>25 lanes of 64 bits each</strong> (a 5&times;5 matrix).<br>
+  All operations are bitwise. Over F<sub>2</sub>: XOR = addition (linear), AND = multiplication (degree 2).<br>
+  All 24 rounds have the same circuit structure — only the round constant RC[t] differs.
+</p>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-gate" style="background:#1565c0;">&oplus;</div> XOR (addition in F<sub>2</sub>)</div>
+  <div class="legend-item"><div class="legend-gate" style="background:#c62828;">&amp;</div> AND (multiplication in F<sub>2</sub>)</div>
+  <div class="legend-item"><div class="legend-gate" style="background:#00838f;">R<sub>k</sub></div> Rotate left by k bits</div>
+  <div class="legend-item"><div style="width:14px;height:14px;background:#c8e6c9;border:1.5px solid #2e7d32;border-radius:3px;"></div> Round input</div>
+  <div class="legend-item"><div style="width:14px;height:14px;background:#ffe0b2;border:1.5px solid #e65100;border-radius:3px;"></div> Intermediate</div>
+  <div class="legend-item"><div style="width:14px;height:14px;background:#bbdefb;border:1.5px solid #1565c0;border-radius:3px;"></div> Round output</div>
+</div>
+
+<div class="diagram">
+
+<!-- ==================== INPUT STATE ==================== -->
+<div class="io-bar io-bar-in">
+  <div class="io-bar-label">INPUT: 25 lanes A[x,y] — the state entering this round</div>
+  <div class="lane-box lane-in">A[0,0]</div>
+  <div class="lane-box lane-in">A[1,0]</div>
+  <div class="lane-box lane-in">A[2,0]</div>
+  <div class="lane-box lane-in">A[3,0]</div>
+  <div class="lane-box lane-in">A[4,0]</div>
+  <div class="lane-box lane-in">A[0,1]</div>
+  <div class="lane-box lane-in">A[1,1]</div>
+  <div class="lane-box lane-in">A[2,1]</div>
+  <div class="lane-box lane-in">A[3,1]</div>
+  <div class="lane-box lane-in">A[4,1]</div>
+  <div class="lane-box lane-in">A[0,2]</div>
+  <div class="lane-box lane-in">A[1,2]</div>
+  <div class="lane-box lane-in">A[2,2]</div>
+  <div class="lane-box lane-in">A[3,2]</div>
+  <div class="lane-box lane-in">A[4,2]</div>
+  <div class="lane-box lane-in">A[0,3]</div>
+  <div class="lane-box lane-in">A[1,3]</div>
+  <div class="lane-box lane-in">A[2,3]</div>
+  <div class="lane-box lane-in">A[3,3]</div>
+  <div class="lane-box lane-in">A[4,3]</div>
+  <div class="lane-box lane-in">A[0,4]</div>
+  <div class="lane-box lane-in">A[1,4]</div>
+  <div class="lane-box lane-in">A[2,4]</div>
+  <div class="lane-box lane-in">A[3,4]</div>
+  <div class="lane-box lane-in">A[4,4]</div>
+</div>
+<div class="arrow-down">&darr;&darr;&darr;</div>
+
+<!-- ==================== THETA ==================== -->
+<div class="section s-theta">
+  <div class="section-label">&theta; Theta — Column Parity Mixing
+    <span class="cost-badge cost-xor">50 XOR</span>
+    <span class="cost-badge cost-rot">5 ROT</span>
+  </div>
+
+  <!-- Step 1 -->
+  <svg width="100%" viewBox="0 0 1050 165">
+    <text x="10" y="18" style="font-size:12px; fill:#1565c0; font-weight:700; font-family:sans-serif;">Step 1: Column parities — for each column x, XOR all 5 lanes in that column</text>
+    <text x="10" y="36" style="font-size:11px; fill:#666; font-family:sans-serif;">C[x] = A[x,0] &oplus; A[x,1] &oplus; A[x,2] &oplus; A[x,3] &oplus; A[x,4]</text>
+
+    <!-- Column 0 -->
+    <g transform="translate(10, 50)">
+      <rect x="0" y="0" width="44" height="20" rx="3" fill="#c8e6c9" stroke="#2e7d32" stroke-width="1.2"/>
+      <text x="22" y="14" text-anchor="middle" style="font-size:9px; fill:#1b5e20; font-weight:600;">A[0,0]</text>
+      <rect x="52" y="0" width="44" height="20" rx="3" fill="#c8e6c9" stroke="#2e7d32" stroke-width="1.2"/>
+      <text x="74" y="14" text-anchor="middle" style="font-size:9px; fill:#1b5e20; font-weight:600;">A[0,1]</text>
+      <line x1="44" y1="10" x2="52" y2="10" stroke="#555" stroke-width="1.2"/>
+      <rect x="104" y="0" width="44" height="20" rx="3" fill="#c8e6c9" stroke="#2e7d32" stroke-width="1.2"/>
+      <text x="126" y="14" text-anchor="middle" style="font-size:9px; fill:#1b5e20; font-weight:600;">A[0,2]</text>
+      <line x1="96" y1="10" x2="104" y2="10" stroke="#555" stroke-width="1.2"/>
+      <rect x="156" y="0" width="44" height="20" rx="3" fill="#c8e6c9" stroke="#2e7d32" stroke-width="1.2"/>
+      <text x="178" y="14" text-anchor="middle" style="font-size:9px; fill:#1b5e20; font-weight:600;">A[0,3]</text>
+      <line x1="148" y1="10" x2="156" y2="10" stroke="#555" stroke-width="1.2"/>
+      <rect x="208" y="0" width="44" height="20" rx="3" fill="#c8e6c9" stroke="#2e7d32" stroke-width="1.2"/>
+      <text x="230" y="14" text-anchor="middle" style="font-size:9px; fill:#1b5e20; font-weight:600;">A[0,4]</text>
+      <line x1="200" y1="10" x2="208" y2="10" stroke="#555" stroke-width="1.2"/>
+
+      <!-- XOR gates chained -->
+      <circle cx="48" cy="34" r="9" fill="#1565c0"/>
+      <text x="48" y="38" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="22" y1="20" x2="22" y2="28" stroke="#555" stroke-width="1.2"/>
+      <line x1="22" y1="28" x2="39" y2="34" stroke="#555" stroke-width="1.2"/>
+      <line x1="74" y1="20" x2="74" y2="28" stroke="#555" stroke-width="1.2"/>
+      <line x1="74" y1="28" x2="57" y2="34" stroke="#555" stroke-width="1.2"/>
+
+      <circle cx="100" cy="50" r="9" fill="#1565c0"/>
+      <text x="100" y="54" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="48" y1="43" x2="48" y2="46" stroke="#555" stroke-width="1.2"/>
+      <line x1="48" y1="46" x2="91" y2="50" stroke="#555" stroke-width="1.2"/>
+      <line x1="126" y1="20" x2="126" y2="44" stroke="#555" stroke-width="1.2"/>
+      <line x1="126" y1="44" x2="109" y2="50" stroke="#555" stroke-width="1.2"/>
+
+      <circle cx="152" cy="66" r="9" fill="#1565c0"/>
+      <text x="152" y="70" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="100" y1="59" x2="100" y2="62" stroke="#555" stroke-width="1.2"/>
+      <line x1="100" y1="62" x2="143" y2="66" stroke="#555" stroke-width="1.2"/>
+      <line x1="178" y1="20" x2="178" y2="60" stroke="#555" stroke-width="1.2"/>
+      <line x1="178" y1="60" x2="161" y2="66" stroke="#555" stroke-width="1.2"/>
+
+      <circle cx="204" cy="82" r="9" fill="#1565c0"/>
+      <text x="204" y="86" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="152" y1="75" x2="152" y2="78" stroke="#555" stroke-width="1.2"/>
+      <line x1="152" y1="78" x2="195" y2="82" stroke="#555" stroke-width="1.2"/>
+      <line x1="230" y1="20" x2="230" y2="76" stroke="#555" stroke-width="1.2"/>
+      <line x1="230" y1="76" x2="213" y2="82" stroke="#555" stroke-width="1.2"/>
+
+      <!-- Output C[0] -->
+      <line x1="204" y1="91" x2="204" y2="102" stroke="#333" stroke-width="1.8"/>
+      <rect x="182" y="102" width="44" height="18" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="204" y="115" text-anchor="middle" style="font-size:10px; fill:#bf360c; font-weight:700;">C[0]</text>
+    </g>
+
+    <!-- Repeat for columns 1-4 -->
+    <text x="280" y="105" style="font-size:13px; fill:#ccc; font-family:sans-serif;">|</text>
+    <g transform="translate(295, 100)">
+      <text x="0" y="10" style="font-size:11px; fill:#888; font-family:sans-serif;">Same for C[1], C[2], C[3], C[4]</text>
+      <text x="0" y="26" style="font-size:11px; fill:#1565c0; font-weight:700; font-family:sans-serif;">= 4 XOR &times; 5 columns = 20 XOR gates</text>
+    </g>
+
+    <!-- Step 2 -->
+    <text x="530" y="18" style="font-size:12px; fill:#1565c0; font-weight:700; font-family:sans-serif;">Step 2: Mixing — combine neighbor parities</text>
+    <text x="530" y="36" style="font-size:11px; fill:#666; font-family:sans-serif;">D[x] = C[x-1] &oplus; Rot(C[x+1], 1)</text>
+
+    <g transform="translate(530, 50)">
+      <rect x="0" y="0" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="22" y="14" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">C[x-1]</text>
+
+      <rect x="70" y="0" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="92" y="14" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">C[x+1]</text>
+      <line x1="92" y1="20" x2="92" y2="32" stroke="#555" stroke-width="1.2"/>
+      <rect x="72" y="32" width="40" height="16" rx="8" fill="#00838f"/>
+      <text x="92" y="44" text-anchor="middle" style="font-size:8px; fill:#fff; font-weight:700;">R(1)</text>
+      <line x1="92" y1="48" x2="92" y2="60" stroke="#555" stroke-width="1.2"/>
+
+      <line x1="22" y1="20" x2="22" y2="60" stroke="#555" stroke-width="1.2"/>
+      <circle cx="57" cy="66" r="9" fill="#1565c0"/>
+      <text x="57" y="70" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="22" y1="60" x2="48" y2="66" stroke="#555" stroke-width="1.2"/>
+      <line x1="92" y1="60" x2="66" y2="66" stroke="#555" stroke-width="1.2"/>
+
+      <line x1="57" y1="75" x2="57" y2="86" stroke="#333" stroke-width="1.8"/>
+      <rect x="35" y="86" width="44" height="18" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="57" y="99" text-anchor="middle" style="font-size:10px; fill:#bf360c; font-weight:700;">D[x]</text>
+    </g>
+    <text x="680" y="100" style="font-size:11px; fill:#888; font-family:sans-serif;">&times;5 columns</text>
+    <text x="680" y="116" style="font-size:11px; fill:#1565c0; font-weight:700; font-family:sans-serif;">= 5 XOR + 5 ROT</text>
+
+    <!-- Step 3 -->
+    <text x="800" y="18" style="font-size:12px; fill:#1565c0; font-weight:700; font-family:sans-serif;">Step 3: Apply to each lane</text>
+    <text x="800" y="36" style="font-size:11px; fill:#666; font-family:sans-serif;">&theta;[x,y] = A[x,y] &oplus; D[x]</text>
+
+    <g transform="translate(800, 50)">
+      <rect x="0" y="0" width="44" height="20" rx="3" fill="#c8e6c9" stroke="#2e7d32" stroke-width="1.2"/>
+      <text x="22" y="14" text-anchor="middle" style="font-size:9px; fill:#1b5e20; font-weight:600;">A[x,y]</text>
+      <rect x="60" y="0" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="82" y="14" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">D[x]</text>
+
+      <line x1="22" y1="20" x2="22" y2="38" stroke="#555" stroke-width="1.2"/>
+      <line x1="82" y1="20" x2="82" y2="38" stroke="#555" stroke-width="1.2"/>
+      <circle cx="52" cy="44" r="9" fill="#1565c0"/>
+      <text x="52" y="48" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="22" y1="38" x2="43" y2="44" stroke="#555" stroke-width="1.2"/>
+      <line x1="82" y1="38" x2="61" y2="44" stroke="#555" stroke-width="1.2"/>
+
+      <line x1="52" y1="53" x2="52" y2="64" stroke="#333" stroke-width="1.8"/>
+      <rect x="30" y="64" width="44" height="18" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="52" y="77" text-anchor="middle" style="font-size:10px; fill:#bf360c; font-weight:700;">&theta;[x,y]</text>
+    </g>
+    <text x="920" y="100" style="font-size:11px; fill:#888; font-family:sans-serif;">&times;25 lanes</text>
+    <text x="920" y="116" style="font-size:11px; fill:#1565c0; font-weight:700; font-family:sans-serif;">= 25 XOR</text>
+  </svg>
+</div>
+
+<div class="arrow-down">&darr; 25 intermediate lanes &theta;[x,y] &darr;</div>
+
+<!-- ==================== RHO ==================== -->
+<div class="section s-rho">
+  <div class="section-label">&rho; Rho — Bit Rotation
+    <span class="cost-badge cost-rot">24 ROT</span>
+  </div>
+  <svg width="100%" viewBox="0 0 1050 55">
+    <text x="10" y="16" style="font-size:12px; fill:#00838f; font-weight:700; font-family:sans-serif;">
+      &rho;[x,y] = RotateLeft(&theta;[x,y], r[x,y])
+    </text>
+    <text x="10" y="34" style="font-size:11px; fill:#666; font-family:sans-serif;">
+      Each lane is rotated by a fixed number of bit positions. Lane (0,0) has offset 0 (no-op). 24 non-trivial rotations.
+    </text>
+    <text x="10" y="50" style="font-size:11px; fill:#00838f; font-weight:700; font-family:sans-serif;">
+      Zero gates — rotation just permutes the 64 bits within each lane.
+    </text>
+  </svg>
+</div>
+
+<div class="arrow-down">&darr; 25 rotated lanes &rho;[x,y] &darr;</div>
+
+<!-- ==================== PI ==================== -->
+<div class="section s-pi">
+  <div class="section-label">&pi; Pi — Lane Shuffle
+    <span class="cost-badge cost-free">FREE</span>
+  </div>
+  <svg width="100%" viewBox="0 0 1050 55">
+    <text x="10" y="16" style="font-size:12px; fill:#388e3c; font-weight:700; font-family:sans-serif;">
+      B[y, (2x+3y) mod 5] = &rho;[x,y]
+    </text>
+    <text x="10" y="34" style="font-size:11px; fill:#666; font-family:sans-serif;">
+      Rearranges the 25 lanes into new positions. No bits are changed — just the (x,y) index of each lane moves.
+    </text>
+    <text x="10" y="50" style="font-size:11px; fill:#388e3c; font-weight:700; font-family:sans-serif;">
+      Zero gates, zero cost — prover and verifier just relabel their arrays.
+    </text>
+  </svg>
+</div>
+
+<div class="arrow-down">&darr; 25 shuffled lanes B[i,j] &darr;</div>
+
+<!-- ==================== CHI ==================== -->
+<div class="section s-chi">
+  <div class="section-label">&chi; Chi — Nonlinear Mixing (THE ONLY AND GATE)
+    <span class="cost-badge cost-and">25 AND</span>
+    <span class="cost-badge cost-xor">50 XOR</span>
+  </div>
+  <div class="section-note">
+    Each output lane depends on 3 lanes in the same row (same j). Operates on 5 rows of 5 lanes independently.
+  </div>
+
+  <svg width="100%" viewBox="0 0 1050 400">
+    <!-- Formula -->
+    <rect x="10" y="4" width="600" height="24" rx="4" fill="#fff0f0" stroke="#c62828" stroke-width="1"/>
+    <text x="20" y="20" style="font-size:12px; fill:#c62828; font-weight:700;">
+      &chi;[i,j] = B[i,j] &oplus; B[i+2,j] &oplus; B[i+1,j] &middot; B[i+2,j]
+    </text>
+    <text x="400" y="20" style="font-size:11px; fill:#888;">
+      (indices mod 5)
+    </text>
+
+    <text x="10" y="50" style="font-size:12px; fill:#333; font-weight:700; font-family:sans-serif;">
+      One row (j = fixed), all 5 output lanes:
+    </text>
+
+    <!-- Input row: B[0,j] through B[4,j] -->
+    <g transform="translate(10, 62)">
+      <rect x="0" y="0" width="180" height="28" rx="4" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+      <text x="90" y="12" text-anchor="middle" style="font-size:10px; fill:#bf360c; font-weight:700; font-family:sans-serif;">Inputs: 5 lanes from same row</text>
+      <rect x="8" y="14" width="28" height="14" rx="2" fill="#ffe0b2" stroke="#e65100" stroke-width="1"/>
+      <text x="22" y="25" text-anchor="middle" style="font-size:8px; fill:#bf360c; font-weight:700;">B[0]</text>
+      <rect x="42" y="14" width="28" height="14" rx="2" fill="#ffe0b2" stroke="#e65100" stroke-width="1"/>
+      <text x="56" y="25" text-anchor="middle" style="font-size:8px; fill:#bf360c; font-weight:700;">B[1]</text>
+      <rect x="76" y="14" width="28" height="14" rx="2" fill="#ffe0b2" stroke="#e65100" stroke-width="1"/>
+      <text x="90" y="25" text-anchor="middle" style="font-size:8px; fill:#bf360c; font-weight:700;">B[2]</text>
+      <rect x="110" y="14" width="28" height="14" rx="2" fill="#ffe0b2" stroke="#e65100" stroke-width="1"/>
+      <text x="124" y="25" text-anchor="middle" style="font-size:8px; fill:#bf360c; font-weight:700;">B[3]</text>
+      <rect x="144" y="14" width="28" height="14" rx="2" fill="#ffe0b2" stroke="#e65100" stroke-width="1"/>
+      <text x="158" y="25" text-anchor="middle" style="font-size:8px; fill:#bf360c; font-weight:700;">B[4]</text>
+    </g>
+
+    <!-- === χ[0,j] === -->
+    <g transform="translate(10, 110)">
+      <text x="0" y="0" style="font-size:11px; fill:#c62828; font-weight:700; font-family:sans-serif;">&chi;[0,j]:</text>
+      <text x="60" y="0" style="font-size:11px; fill:#555; font-family:sans-serif;">uses B[0], B[1], B[2]</text>
+
+      <rect x="0" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="22" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[1,j]</text>
+      <rect x="60" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="82" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[2,j]</text>
+
+      <!-- AND gate -->
+      <line x1="22" y1="30" x2="22" y2="42" stroke="#555" stroke-width="1.2"/>
+      <line x1="82" y1="30" x2="82" y2="42" stroke="#555" stroke-width="1.2"/>
+      <rect x="32" y="42" width="40" height="20" rx="10" fill="#c62828"/>
+      <text x="52" y="56" text-anchor="middle" style="font-size:10px; fill:#fff; font-weight:800;">AND</text>
+      <line x1="52" y1="62" x2="52" y2="72" stroke="#555" stroke-width="1.2"/>
+
+      <!-- XOR with B[2,j] -->
+      <line x1="82" y1="30" x2="110" y2="30" stroke="#555" stroke-width="1.2" stroke-dasharray="3,2"/>
+      <line x1="110" y1="30" x2="110" y2="72" stroke="#555" stroke-width="1.2"/>
+      <circle cx="81" cy="78" r="9" fill="#1565c0"/>
+      <text x="81" y="82" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="52" y1="72" x2="72" y2="78" stroke="#555" stroke-width="1.2"/>
+      <line x1="110" y1="72" x2="90" y2="78" stroke="#555" stroke-width="1.2"/>
+
+      <!-- XOR with B[0,j] -->
+      <rect x="130" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="152" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[0,j]</text>
+      <line x1="152" y1="30" x2="152" y2="94" stroke="#555" stroke-width="1.2"/>
+      <line x1="81" y1="87" x2="81" y2="94" stroke="#555" stroke-width="1.2"/>
+      <circle cx="116" cy="100" r="9" fill="#1565c0"/>
+      <text x="116" y="104" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="81" y1="94" x2="107" y2="100" stroke="#555" stroke-width="1.2"/>
+      <line x1="152" y1="94" x2="125" y2="100" stroke="#555" stroke-width="1.2"/>
+
+      <!-- Output -->
+      <line x1="116" y1="109" x2="116" y2="118" stroke="#333" stroke-width="1.8"/>
+      <rect x="94" y="118" width="44" height="18" rx="3" fill="#bbdefb" stroke="#1565c0" stroke-width="1.5"/>
+      <text x="116" y="131" text-anchor="middle" style="font-size:10px; fill:#0d47a1; font-weight:700;">&chi;[0,j]</text>
+
+      <!-- Gate count annotation -->
+      <text x="195" y="55" style="font-size:10px; fill:#c62828; font-weight:700; font-family:sans-serif;">1 AND</text>
+      <text x="195" y="70" style="font-size:10px; fill:#1565c0; font-weight:700; font-family:sans-serif;">2 XOR</text>
+    </g>
+
+    <!-- === χ[1,j] === -->
+    <g transform="translate(280, 110)">
+      <text x="0" y="0" style="font-size:11px; fill:#c62828; font-weight:700; font-family:sans-serif;">&chi;[1,j]:</text>
+      <text x="60" y="0" style="font-size:11px; fill:#555; font-family:sans-serif;">uses B[1], B[2], B[3]</text>
+
+      <rect x="0" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="22" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[2,j]</text>
+      <rect x="60" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="82" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[3,j]</text>
+
+      <line x1="22" y1="30" x2="22" y2="42" stroke="#555" stroke-width="1.2"/>
+      <line x1="82" y1="30" x2="82" y2="42" stroke="#555" stroke-width="1.2"/>
+      <rect x="32" y="42" width="40" height="20" rx="10" fill="#c62828"/>
+      <text x="52" y="56" text-anchor="middle" style="font-size:10px; fill:#fff; font-weight:800;">AND</text>
+      <line x1="52" y1="62" x2="52" y2="72" stroke="#555" stroke-width="1.2"/>
+
+      <line x1="82" y1="30" x2="110" y2="30" stroke="#555" stroke-width="1.2" stroke-dasharray="3,2"/>
+      <line x1="110" y1="30" x2="110" y2="72" stroke="#555" stroke-width="1.2"/>
+      <circle cx="81" cy="78" r="9" fill="#1565c0"/>
+      <text x="81" y="82" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="52" y1="72" x2="72" y2="78" stroke="#555" stroke-width="1.2"/>
+      <line x1="110" y1="72" x2="90" y2="78" stroke="#555" stroke-width="1.2"/>
+
+      <rect x="130" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="152" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[1,j]</text>
+      <line x1="152" y1="30" x2="152" y2="94" stroke="#555" stroke-width="1.2"/>
+      <line x1="81" y1="87" x2="81" y2="94" stroke="#555" stroke-width="1.2"/>
+      <circle cx="116" cy="100" r="9" fill="#1565c0"/>
+      <text x="116" y="104" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="81" y1="94" x2="107" y2="100" stroke="#555" stroke-width="1.2"/>
+      <line x1="152" y1="94" x2="125" y2="100" stroke="#555" stroke-width="1.2"/>
+
+      <line x1="116" y1="109" x2="116" y2="118" stroke="#333" stroke-width="1.8"/>
+      <rect x="94" y="118" width="44" height="18" rx="3" fill="#bbdefb" stroke="#1565c0" stroke-width="1.5"/>
+      <text x="116" y="131" text-anchor="middle" style="font-size:10px; fill:#0d47a1; font-weight:700;">&chi;[1,j]</text>
+    </g>
+
+    <!-- === χ[2,j] === -->
+    <g transform="translate(550, 110)">
+      <text x="0" y="0" style="font-size:11px; fill:#c62828; font-weight:700; font-family:sans-serif;">&chi;[2,j]:</text>
+      <text x="60" y="0" style="font-size:11px; fill:#555; font-family:sans-serif;">uses B[2], B[3], B[4]</text>
+
+      <rect x="0" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="22" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[3,j]</text>
+      <rect x="60" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="82" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[4,j]</text>
+
+      <line x1="22" y1="30" x2="22" y2="42" stroke="#555" stroke-width="1.2"/>
+      <line x1="82" y1="30" x2="82" y2="42" stroke="#555" stroke-width="1.2"/>
+      <rect x="32" y="42" width="40" height="20" rx="10" fill="#c62828"/>
+      <text x="52" y="56" text-anchor="middle" style="font-size:10px; fill:#fff; font-weight:800;">AND</text>
+      <line x1="52" y1="62" x2="52" y2="72" stroke="#555" stroke-width="1.2"/>
+
+      <line x1="82" y1="30" x2="110" y2="30" stroke="#555" stroke-width="1.2" stroke-dasharray="3,2"/>
+      <line x1="110" y1="30" x2="110" y2="72" stroke="#555" stroke-width="1.2"/>
+      <circle cx="81" cy="78" r="9" fill="#1565c0"/>
+      <text x="81" y="82" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+
+      <rect x="130" y="10" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="152" y="24" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">B[2,j]</text>
+      <line x1="152" y1="30" x2="152" y2="94" stroke="#555" stroke-width="1.2"/>
+      <line x1="81" y1="87" x2="81" y2="94" stroke="#555" stroke-width="1.2"/>
+      <circle cx="116" cy="100" r="9" fill="#1565c0"/>
+      <text x="116" y="104" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+
+      <line x1="116" y1="109" x2="116" y2="118" stroke="#333" stroke-width="1.8"/>
+      <rect x="94" y="118" width="44" height="18" rx="3" fill="#bbdefb" stroke="#1565c0" stroke-width="1.5"/>
+      <text x="116" y="131" text-anchor="middle" style="font-size:10px; fill:#0d47a1; font-weight:700;">&chi;[2,j]</text>
+    </g>
+
+    <!-- Remaining lanes -->
+    <g transform="translate(790, 110)">
+      <text x="0" y="0" style="font-size:11px; fill:#c62828; font-weight:700; font-family:sans-serif;">&chi;[3,j] and &chi;[4,j]:</text>
+      <text x="0" y="20" style="font-size:11px; fill:#555; font-family:sans-serif;">Same pattern</text>
+      <text x="0" y="38" style="font-size:11px; fill:#555; font-family:sans-serif;">&chi;[3] uses B[3],B[4],B[0]</text>
+      <text x="0" y="54" style="font-size:11px; fill:#555; font-family:sans-serif;">&chi;[4] uses B[4],B[0],B[1]</text>
+      <text x="0" y="76" style="font-size:11px; fill:#888; font-family:sans-serif;">(wraps around mod 5)</text>
+    </g>
+
+    <!-- Row total -->
+    <rect x="10" y="260" width="1030" height="36" rx="6" fill="#fff5f5" stroke="#c62828" stroke-width="1.5"/>
+    <text x="30" y="274" style="font-size:12px; fill:#333; font-weight:700; font-family:sans-serif;">
+      Per row (5 lanes): 5 AND + 10 XOR
+    </text>
+    <text x="30" y="290" style="font-size:12px; fill:#333; font-weight:700; font-family:sans-serif;">
+      &times; 5 rows = <tspan fill="#c62828">25 AND gates</tspan> + <tspan fill="#1565c0">50 XOR gates</tspan> total for &chi;
+    </text>
+  </svg>
+</div>
+
+<div class="arrow-down">&darr; 25 output lanes &chi;[i,j] &darr;</div>
+
+<!-- ==================== IOTA ==================== -->
+<div class="section s-iota">
+  <div class="section-label">&iota; Iota — Add Round Constant
+    <span class="cost-badge cost-xor">1 XOR</span>
+  </div>
+  <svg width="100%" viewBox="0 0 1050 90">
+    <text x="10" y="16" style="font-size:12px; fill:#6a1b9a; font-weight:700; font-family:sans-serif;">
+      O[0,0] = &chi;[0,0] &oplus; RC[t] &nbsp;&nbsp;&nbsp; O[i,j] = &chi;[i,j] for all other (i,j)
+    </text>
+    <text x="10" y="36" style="font-size:11px; fill:#666; font-family:sans-serif;">
+      Only lane (0,0) gets XORed with the 64-bit round constant. The other 24 lanes pass through unchanged.
+    </text>
+
+    <g transform="translate(10, 48)">
+      <rect x="0" y="0" width="44" height="20" rx="3" fill="#ffe0b2" stroke="#e65100" stroke-width="1.2"/>
+      <text x="22" y="14" text-anchor="middle" style="font-size:9px; fill:#bf360c; font-weight:600;">&chi;[0,0]</text>
+      <rect x="60" y="0" width="44" height="20" rx="3" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.2"/>
+      <text x="82" y="14" text-anchor="middle" style="font-size:9px; fill:#6a1b9a; font-weight:600;">RC[t]</text>
+      <line x1="22" y1="20" x2="22" y2="30" stroke="#555" stroke-width="1.2"/>
+      <line x1="82" y1="20" x2="82" y2="30" stroke="#555" stroke-width="1.2"/>
+      <circle cx="52" cy="36" r="9" fill="#1565c0"/>
+      <text x="52" y="40" text-anchor="middle" style="font-size:9px; fill:#fff; font-weight:700;">&oplus;</text>
+      <line x1="52" y1="45" x2="52" y2="54" stroke="#333" stroke-width="1.8"/>
+
+      <rect x="140" y="18" width="56" height="20" rx="3" fill="#bbdefb" stroke="#1565c0" stroke-width="1.5"/>
+      <text x="168" y="32" text-anchor="middle" style="font-size:10px; fill:#0d47a1; font-weight:700;">O[0,0]</text>
+      <line x1="52" y1="54" x2="52" y2="58" stroke="#333" stroke-width="1.8"/>
+
+      <!-- Arrow from output to box -->
+      <line x1="52" y1="54" x2="140" y2="28" stroke="#333" stroke-width="1.5" stroke-dasharray="4,2"/>
+    </g>
+    <text x="280" y="76" style="font-size:11px; fill:#6a1b9a; font-weight:700; font-family:sans-serif;">
+      RC[t] is a known constant — different for each of the 24 rounds.
+    </text>
+  </svg>
+</div>
+
+<div class="arrow-down">&darr;&darr;&darr;</div>
+
+<!-- ==================== OUTPUT STATE ==================== -->
+<div class="io-bar io-bar-out">
+  <div class="io-bar-label">OUTPUT: 25 lanes O[i,j] — becomes the input to the next round</div>
+  <div class="lane-box lane-out">O[0,0]</div>
+  <div class="lane-box lane-out">O[1,0]</div>
+  <div class="lane-box lane-out">O[2,0]</div>
+  <div class="lane-box lane-out">O[3,0]</div>
+  <div class="lane-box lane-out">O[4,0]</div>
+  <div class="lane-box lane-out">O[0,1]</div>
+  <div class="lane-box lane-out">O[1,1]</div>
+  <div class="lane-box lane-out">O[2,1]</div>
+  <div class="lane-box lane-out">O[3,1]</div>
+  <div class="lane-box lane-out">O[4,1]</div>
+  <div class="lane-box lane-out">O[0,2]</div>
+  <div class="lane-box lane-out">O[1,2]</div>
+  <div class="lane-box lane-out">O[2,2]</div>
+  <div class="lane-box lane-out">O[3,2]</div>
+  <div class="lane-box lane-out">O[4,2]</div>
+  <div class="lane-box lane-out">O[0,3]</div>
+  <div class="lane-box lane-out">O[1,3]</div>
+  <div class="lane-box lane-out">O[2,3]</div>
+  <div class="lane-box lane-out">O[3,3]</div>
+  <div class="lane-box lane-out">O[4,3]</div>
+  <div class="lane-box lane-out">O[0,4]</div>
+  <div class="lane-box lane-out">O[1,4]</div>
+  <div class="lane-box lane-out">O[2,4]</div>
+  <div class="lane-box lane-out">O[3,4]</div>
+  <div class="lane-box lane-out">O[4,4]</div>
+</div>
+
+<!-- ==================== SUMMARY ==================== -->
+<h2 style="margin-top: 28px; font-size: 1.1em; color: #333;">Gate Count Summary</h2>
+
+<table class="summary-table">
+  <thead>
+    <tr>
+      <th>Step</th>
+      <th style="color:#c62828;">AND gates</th>
+      <th style="color:#1565c0;">XOR gates</th>
+      <th style="color:#00838f;">Rotations</th>
+      <th>What it does</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="color:#1565c0;">&theta; Theta</td>
+      <td>0</td><td>50</td><td>5</td>
+      <td style="text-align:left; font-weight:400;">Mix each lane with its column neighbors</td>
+    </tr>
+    <tr>
+      <td style="color:#00838f;">&rho; Rho</td>
+      <td>0</td><td>0</td><td>24</td>
+      <td style="text-align:left; font-weight:400;">Rotate bits within each lane</td>
+    </tr>
+    <tr>
+      <td style="color:#388e3c;">&pi; Pi</td>
+      <td>0</td><td>0</td><td>0</td>
+      <td style="text-align:left; font-weight:400;">Shuffle lane positions</td>
+    </tr>
+    <tr>
+      <td style="color:#c62828;">&chi; Chi</td>
+      <td style="color:#c62828; font-weight:700;">25</td><td>50</td><td>0</td>
+      <td style="text-align:left; font-weight:400; color:#c62828;">Mix lanes within each row (AND = only nonlinear op)</td>
+    </tr>
+    <tr>
+      <td style="color:#6a1b9a;">&iota; Iota</td>
+      <td>0</td><td>1</td><td>0</td>
+      <td style="text-align:left; font-weight:400;">XOR round constant into lane (0,0)</td>
+    </tr>
+    <tr style="background:#f5f5f5; font-weight:700;">
+      <td>Per round</td>
+      <td style="color:#c62828;">25</td>
+      <td style="color:#1565c0;">101</td>
+      <td style="color:#00838f;">29</td>
+      <td></td>
+    </tr>
+    <tr style="background:#eee; font-weight:700;">
+      <td>&times; 24 rounds</td>
+      <td style="color:#c62828;">600</td>
+      <td style="color:#1565c0;">2,424</td>
+      <td style="color:#00838f;">696</td>
+      <td></td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<div style="text-align:center; margin-top:24px; font-size:11px; color:#bbb;">
+  Keccak-f[1600] Gate-Level Circuit — Binius keccak-check
+</div>
+
+</body>
+</html>

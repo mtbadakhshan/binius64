@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Keccak-f Detailed Walkthrough with Concrete Values</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f5f5f5; padding: 20px; color: #333; }
+  h1 { text-align: center; margin-bottom: 4px; font-size: 1.4em; color: #1a1a2e; }
+  h2 { font-size: 1.1em; color: #1a1a2e; margin: 24px 0 10px; border-bottom: 2px solid #ddd; padding-bottom: 4px; }
+  h3 { font-size: 0.95em; color: #444; margin: 14px 0 6px; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 28px; font-size: 0.85em; line-height: 1.5; }
+  .container { max-width: 960px; margin: 0 auto; }
+  .panel { background: #fff; border-radius: 12px; padding: 20px; margin: 16px 0; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+  .note { font-size: 0.78em; color: #777; margin-top: 8px; line-height: 1.5; font-style: italic; }
+
+  .state-grid {
+    display: grid; grid-template-columns: 60px repeat(5, 1fr); gap: 2px;
+    max-width: 620px; margin: 10px auto; font-size: 0.7em;
+  }
+  .state-header { font-weight: 700; color: #888; text-align: center; padding: 4px; }
+  .state-cell {
+    padding: 6px 4px; text-align: center; border-radius: 4px;
+    font-family: 'Courier New', monospace; font-weight: 600; font-size: 0.95em;
+    border: 1.5px solid;
+  }
+  .sc-input { background: #e8f5e9; border-color: #66bb6a; color: #1b5e20; }
+  .sc-rate { background: #e3f2fd; border-color: #42a5f5; color: #0d47a1; }
+  .sc-cap { background: #fce4ec; border-color: #ef5350; color: #b71c1c; }
+  .sc-result { background: #fff3e0; border-color: #ffa726; color: #e65100; }
+  .sc-chi { background: #f3e5f5; border-color: #ab47bc; color: #6a1b9a; }
+  .sc-zero { background: #fafafa; border-color: #ccc; color: #999; }
+
+  .row-label { font-weight: 700; color: #555; display: flex; align-items: center; justify-content: center; }
+
+  .bit-row { display: flex; gap: 1px; justify-content: center; margin: 4px 0; }
+  .bit { width: 11px; height: 14px; font-size: 0.55em; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; border-radius: 1px; }
+  .b0 { background: #e0e0e0; color: #999; }
+  .b1 { background: #ff8a65; color: #fff; }
+
+  .op-box {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 6px; margin: 3px 2px;
+    font-family: monospace; font-size: 0.8em; font-weight: 600;
+  }
+  .op-xor { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
+  .op-and { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+  .op-not { background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
+  .op-rot { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+  .op-eq { background: #f5f5f5; color: #555; border: 1px solid #ccc; }
+
+  .arrow-down { text-align: center; font-size: 1.2em; color: #bbb; margin: 6px 0; }
+  .formula {
+    font-family: 'Courier New', monospace; font-size: 0.82em;
+    background: #f9f9f9; padding: 10px 14px; border-radius: 6px;
+    margin: 8px 0; border-left: 4px solid #1565c0; line-height: 1.7;
+    overflow-x: auto;
+  }
+  .highlight-box {
+    padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 0.85em; line-height: 1.6;
+  }
+  .hb-blue { background: #e3f2fd; border: 1px solid #90caf9; }
+  .hb-red { background: #ffebee; border: 1px solid #ef9a9a; }
+  .hb-green { background: #e8f5e9; border: 1px solid #a5d6a7; }
+  .hb-yellow { background: #fff9c4; border: 1px solid #fff176; }
+
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+</style>
+</head>
+<body>
+
+<h1>Keccak-f[1600]: A Complete Walkthrough with Concrete Values</h1>
+<p class="subtitle">
+  Using a tiny 4-bit example first, then showing the real 64-bit version.<br>
+  Every operation is shown with actual numbers you can verify by hand.
+</p>
+
+<div class="container">
+
+<!-- ==================== SECTION 1: THE STATE ==================== -->
+<div class="panel">
+  <h2>1. The Keccak State as a 5&times;5 Matrix</h2>
+  <p style="font-size:0.9em; margin-bottom:8px;">
+    The state is a 5&times;5 grid. Each cell is a 64-bit "lane." We'll use <strong>4-bit lanes</strong> for clarity.
+  </p>
+
+  <h3>Initial state: all zeros</h3>
+  <div class="state-grid">
+    <div class="state-header"></div>
+    <div class="state-header">x=0</div><div class="state-header">x=1</div>
+    <div class="state-header">x=2</div><div class="state-header">x=3</div><div class="state-header">x=4</div>
+
+    <div class="row-label">y=0</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+
+    <div class="row-label">y=1</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+
+    <div class="row-label">y=2</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+
+    <div class="row-label">y=3</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+
+    <div class="row-label">y=4</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+    <div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div><div class="state-cell sc-zero">0000</div>
+  </div>
+  <p class="note">In real Keccak: each cell is 64 bits (a u64). With 4-bit lanes, our toy state has 25&times;4 = 100 bits.</p>
+
+  <h3>After absorbing a message (XOR into the rate region)</h3>
+  <p style="font-size:0.85em; margin-bottom:6px;">
+    The message is XORed into the first <strong>17 lanes</strong> (the "rate" = 1088 bits = 17 &times; 64).
+    The remaining <strong>8 lanes</strong> (the "capacity" = 512 bits) stay zero.
+    The rate covers lanes 0&ndash;16 in the standard lane ordering (x + 5&times;y):
+    all of rows y=0, y=1, y=2 (15 lanes) plus lanes (x=0, y=3) and (x=1, y=3) (2 more) = 17 total.
+  </p>
+
+  <div class="state-grid">
+    <div class="state-header"></div>
+    <div class="state-header">x=0</div><div class="state-header">x=1</div>
+    <div class="state-header">x=2</div><div class="state-header">x=3</div><div class="state-header">x=4</div>
+
+    <div class="row-label">y=0</div>
+    <div class="state-cell sc-rate">1101</div><div class="state-cell sc-rate">0110</div>
+    <div class="state-cell sc-rate">1010</div><div class="state-cell sc-rate">0011</div><div class="state-cell sc-rate">1111</div>
+
+    <div class="row-label">y=1</div>
+    <div class="state-cell sc-rate">0101</div><div class="state-cell sc-rate">1001</div>
+    <div class="state-cell sc-rate">0010</div><div class="state-cell sc-rate">1100</div><div class="state-cell sc-rate">0001</div>
+
+    <div class="row-label">y=2</div>
+    <div class="state-cell sc-rate">1110</div><div class="state-cell sc-rate">0100</div>
+    <div class="state-cell sc-rate">1011</div><div class="state-cell sc-rate">0111</div><div class="state-cell sc-rate">1000</div>
+
+    <div class="row-label">y=3</div>
+    <div class="state-cell sc-rate">0011</div><div class="state-cell sc-rate">1010</div>
+    <div class="state-cell sc-cap">0000</div><div class="state-cell sc-cap">0000</div><div class="state-cell sc-cap">0000</div>
+
+    <div class="row-label">y=4</div>
+    <div class="state-cell sc-cap">0000</div><div class="state-cell sc-cap">0000</div>
+    <div class="state-cell sc-cap">0000</div><div class="state-cell sc-cap">0000</div><div class="state-cell sc-cap">0000</div>
+  </div>
+  <div class="highlight-box hb-blue">
+    <strong>Blue cells = rate (17 lanes)</strong>: message data XORed in.
+    <strong>Red cells = capacity (8 lanes)</strong>: still zeros &mdash; the message never touches these.
+    <br>The rate/capacity boundary falls in the middle of row y=3.
+    <br>Now we apply keccak-f to scramble everything. After keccak-f, the capacity will be non-zero too.
+  </div>
+</div>
+
+<!-- ==================== SECTION 2: THETA ==================== -->
+<div class="panel">
+  <h2>2. Theta (&theta;): Column Parity Mixing</h2>
+  <p style="font-size:0.9em; margin-bottom:8px;">
+    Theta computes the XOR of each column, then mixes neighboring columns.
+    It's the main diffusion step — every lane ends up depending on two other columns.
+  </p>
+
+  <h3>Step 1: Compute column parities C[x] = XOR of all lanes in column x</h3>
+  <svg viewBox="0 0 800 200" style="max-width:800px; display:block; margin:0 auto;">
+    <!-- Column 0 -->
+    <g transform="translate(10,10)">
+      <text x="55" y="0" text-anchor="middle" font-size="11" font-weight="700" fill="#1565c0">Column x=0</text>
+      <rect x="20" y="8" width="70" height="20" rx="3" fill="#e3f2fd" stroke="#42a5f5" stroke-width="1"/>
+      <text x="55" y="22" text-anchor="middle" font-size="10" font-weight="600" fill="#0d47a1" font-family="monospace">1101</text>
+      <rect x="20" y="30" width="70" height="20" rx="3" fill="#e3f2fd" stroke="#42a5f5" stroke-width="1"/>
+      <text x="55" y="44" text-anchor="middle" font-size="10" font-weight="600" fill="#0d47a1" font-family="monospace">0101</text>
+      <rect x="20" y="52" width="70" height="20" rx="3" fill="#e3f2fd" stroke="#42a5f5" stroke-width="1"/>
+      <text x="55" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#0d47a1" font-family="monospace">1110</text>
+      <rect x="20" y="74" width="70" height="20" rx="3" fill="#fce4ec" stroke="#ef5350" stroke-width="1"/>
+      <text x="55" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#b71c1c" font-family="monospace">0000</text>
+      <rect x="20" y="96" width="70" height="20" rx="3" fill="#fce4ec" stroke="#ef5350" stroke-width="1"/>
+      <text x="55" y="110" text-anchor="middle" font-size="10" font-weight="600" fill="#b71c1c" font-family="monospace">0000</text>
+
+      <text x="100" y="66" font-size="10" fill="#1565c0">XOR all &darr;</text>
+
+      <text x="20" y="138" font-size="9" fill="#333" font-family="monospace">
+        1101 XOR 0101 = 1000
+      </text>
+      <text x="20" y="150" font-size="9" fill="#333" font-family="monospace">
+        1000 XOR 1110 = 0110
+      </text>
+      <text x="20" y="162" font-size="9" fill="#333" font-family="monospace">
+        0110 XOR 0000 = 0110
+      </text>
+      <text x="20" y="174" font-size="9" fill="#333" font-family="monospace">
+        0110 XOR 0000 = 0110
+      </text>
+
+      <rect x="20" y="180" width="70" height="20" rx="3" fill="#fff3e0" stroke="#ffa726" stroke-width="2"/>
+      <text x="55" y="194" text-anchor="middle" font-size="11" font-weight="700" fill="#e65100" font-family="monospace">C[0]=0110</text>
+    </g>
+
+    <!-- Column 1 -->
+    <g transform="translate(170,10)">
+      <text x="55" y="0" text-anchor="middle" font-size="11" font-weight="700" fill="#1565c0">Column x=1</text>
+      <rect x="20" y="8" width="70" height="20" rx="3" fill="#e3f2fd" stroke="#42a5f5" stroke-width="1"/>
+      <text x="55" y="22" text-anchor="middle" font-size="10" font-weight="600" fill="#0d47a1" font-family="monospace">0110</text>
+      <rect x="20" y="30" width="70" height="20" rx="3" fill="#e3f2fd" stroke="#42a5f5" stroke-width="1"/>
+      <text x="55" y="44" text-anchor="middle" font-size="10" font-weight="600" fill="#0d47a1" font-family="monospace">1001</text>
+      <rect x="20" y="52" width="70" height="20" rx="3" fill="#e3f2fd" stroke="#42a5f5" stroke-width="1"/>
+      <text x="55" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#0d47a1" font-family="monospace">0100</text>
+      <rect x="20" y="74" width="70" height="20" rx="3" fill="#fce4ec" stroke="#ef5350" stroke-width="1"/>
+      <text x="55" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#b71c1c" font-family="monospace">0000</text>
+      <rect x="20" y="96" width="70" height="20" rx="3" fill="#fce4ec" stroke="#ef5350" stroke-width="1"/>
+      <text x="55" y="110" text-anchor="middle" font-size="10" font-weight="600" fill="#b71c1c" font-family="monospace">0000</text>
+
+      <text x="20" y="150" font-size="9" fill="#333" font-family="monospace">
+        0110 XOR 1001 = 1111
+      </text>
+      <text x="20" y="162" font-size="9" fill="#333" font-family="monospace">
+        1111 XOR 0100 = 1011
+      </text>
+
+      <rect x="20" y="180" width="70" height="20" rx="3" fill="#fff3e0" stroke="#ffa726" stroke-width="2"/>
+      <text x="55" y="194" text-anchor="middle" font-size="11" font-weight="700" fill="#e65100" font-family="monospace">C[1]=1011</text>
+    </g>
+
+    <!-- Summary -->
+    <g transform="translate(400,10)">
+      <text x="0" y="15" font-size="11" font-weight="700" fill="#333">All column parities:</text>
+      <text x="0" y="40" font-size="11" font-family="monospace" fill="#e65100" font-weight="600">C[0] = 0110</text>
+      <text x="0" y="58" font-size="11" font-family="monospace" fill="#e65100" font-weight="600">C[1] = 1011</text>
+      <text x="0" y="76" font-size="11" font-family="monospace" fill="#e65100" font-weight="600">C[2] = 0001</text>
+      <text x="0" y="94" font-size="11" font-family="monospace" fill="#e65100" font-weight="600">C[3] = 1100</text>
+      <text x="0" y="112" font-size="11" font-family="monospace" fill="#e65100" font-weight="600">C[4] = 0110</text>
+      <text x="0" y="140" font-size="9" fill="#888" font-style="italic">(C[2]..C[4] computed same way)</text>
+    </g>
+  </svg>
+
+  <h3>Step 2: Compute D[x] = C[x-1] XOR RotateLeft(C[x+1], 1)</h3>
+  <div class="formula" style="border-left-color:#e65100;">
+    D[0] = C[4] XOR RotL(C[1], 1) = 0110 XOR RotL(1011, 1) = 0110 XOR 0111 = <strong>0001</strong>
+    <br>D[1] = C[0] XOR RotL(C[2], 1) = 0110 XOR RotL(0001, 1) = 0110 XOR 0010 = <strong>0100</strong>
+    <br>D[2] = C[1] XOR RotL(C[3], 1) = 1011 XOR RotL(1100, 1) = 1011 XOR 1001 = <strong>0010</strong>
+    <br>D[3] = C[2] XOR RotL(C[4], 1) = 0001 XOR RotL(0110, 1) = 0001 XOR 1100 = <strong>1101</strong>
+    <br>D[4] = C[3] XOR RotL(C[0], 1) = 1100 XOR RotL(0110, 1) = 1100 XOR 1100 = <strong>0000</strong>
+  </div>
+  <p class="note">RotL(x, 1) shifts all bits left by 1, wrapping the top bit to the bottom. Example: RotL(1011, 1) = 0111.</p>
+
+  <h3>Step 3: Apply correction: A'[x,y] = A[x,y] XOR D[x]</h3>
+  <p style="font-size:0.85em; margin-bottom:6px;">Every lane in column x gets XORed with D[x]:</p>
+
+  <div class="state-grid">
+    <div class="state-header"></div>
+    <div class="state-header">x=0 (D=0001)</div><div class="state-header">x=1 (D=0100)</div>
+    <div class="state-header">x=2 (D=0010)</div><div class="state-header">x=3 (D=1101)</div><div class="state-header">x=4 (D=0000)</div>
+
+    <div class="row-label">y=0</div>
+    <div class="state-cell sc-result">1100</div><div class="state-cell sc-result">0010</div>
+    <div class="state-cell sc-result">1000</div><div class="state-cell sc-result">1110</div><div class="state-cell sc-result">1111</div>
+
+    <div class="row-label">y=1</div>
+    <div class="state-cell sc-result">0100</div><div class="state-cell sc-result">1101</div>
+    <div class="state-cell sc-result">0000</div><div class="state-cell sc-result">0001</div><div class="state-cell sc-result">0001</div>
+
+    <div class="row-label">y=2</div>
+    <div class="state-cell sc-result">1111</div><div class="state-cell sc-result">0000</div>
+    <div class="state-cell sc-result">1001</div><div class="state-cell sc-result">1010</div><div class="state-cell sc-result">1000</div>
+
+    <div class="row-label">y=3</div>
+    <div class="state-cell sc-result">0001</div><div class="state-cell sc-result">0100</div>
+    <div class="state-cell sc-result">0010</div><div class="state-cell sc-result">1101</div><div class="state-cell sc-result">0000</div>
+
+    <div class="row-label">y=4</div>
+    <div class="state-cell sc-result">0001</div><div class="state-cell sc-result">0100</div>
+    <div class="state-cell sc-result">0010</div><div class="state-cell sc-result">1101</div><div class="state-cell sc-result">0000</div>
+  </div>
+  <div class="highlight-box hb-blue">
+    <strong>Theta result:</strong> The capacity lanes (y=3,4) are now <strong>non-zero</strong>!
+    They picked up values from D[x], which depends on all columns.
+    <br>The message has "leaked" into the capacity through the column parity mixing.
+    <br>All 50 operations above were <strong>XOR only</strong> (linear, degree 1).
+  </div>
+</div>
+
+<!-- ==================== SECTION 3: RHO + PI ==================== -->
+<div class="panel">
+  <h2>3. Rho (&rho;) + Pi (&pi;): Rotate and Shuffle</h2>
+
+  <h3>Rho: Rotate bits within each lane</h3>
+  <p style="font-size:0.85em; margin-bottom:8px;">
+    Each lane's bits are rotated left by a fixed amount. The offsets are:
+  </p>
+  <div class="state-grid" style="font-size:0.65em;">
+    <div class="state-header"></div>
+    <div class="state-header">x=0</div><div class="state-header">x=1</div>
+    <div class="state-header">x=2</div><div class="state-header">x=3</div><div class="state-header">x=4</div>
+    <div class="row-label">y=0</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">0</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">1</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">62</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">28</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">27</div>
+    <div class="row-label">y=1</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">36</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">44</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">6</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">55</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">20</div>
+    <div class="row-label" style="font-size:0.9em;">...</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">...</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">...</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">...</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">...</div>
+    <div class="state-cell" style="background:#f5f5f5; border-color:#ccc;">...</div>
+  </div>
+  <p class="note">For our 4-bit lanes, offsets mod 4: lane(0,0) rotates by 0, lane(1,0) by 1, etc.</p>
+
+  <div class="formula" style="border-left-color:#2e7d32;">
+    Example: lane(1,0) = 0010, rotate left by 1 &rarr; <strong>0100</strong>
+    <br>Example: lane(0,0) = 1100, rotate left by 0 &rarr; <strong>1100</strong> (unchanged)
+  </div>
+
+  <h3>Pi: Shuffle lane positions</h3>
+  <p style="font-size:0.85em;">
+    After rotation, each lane moves to a new position: lane at (x,y) moves to (y, (2x+3y) mod 5).
+    <br>No bits change &mdash; just the grid positions shuffle.
+  </p>
+
+  <div class="formula" style="border-left-color:#2e7d32;">
+    (0,0) &rarr; (0,0)&emsp; (1,0) &rarr; (0,2)&emsp; (2,0) &rarr; (0,4)&emsp; (3,0) &rarr; (0,1)&emsp; (4,0) &rarr; (0,3)
+    <br>(0,1) &rarr; (1,3)&emsp; (1,1) &rarr; (1,0)&emsp; (2,1) &rarr; (1,2)&emsp; ...
+  </div>
+
+  <div class="highlight-box hb-green">
+    <strong>Rho + Pi are both linear</strong> (degree 0 or 1). Rho just permutes bits within each lane.
+    Pi just permutes lanes within the grid. No computation, no multiplication, zero cost in the sumcheck.
+  </div>
+</div>
+
+<!-- ==================== SECTION 4: CHI ==================== -->
+<div class="panel">
+  <h2>4. Chi (&chi;): The Only Nonlinear Step</h2>
+  <p style="font-size:0.9em; margin-bottom:12px;">
+    Chi operates on each <strong>row</strong> independently. For each lane:
+  </p>
+  <div style="text-align:center; margin:8px 0;">
+    <span class="op-box" style="font-size:1em; background:#ffebee; color:#c62828; border:2px solid #c62828;">
+      out[x] = in[x] XOR ((NOT in[x+1]) AND in[x+2])
+    </span>
+  </div>
+
+  <h3>Concrete example: Row y=0 after rho+pi</h3>
+  <p style="font-size:0.85em;">Let's say after rho+pi, row y=0 has these values (P = pre-chi state):</p>
+
+  <div class="state-grid" style="grid-template-columns: 60px repeat(5, 1fr); max-width:500px;">
+    <div class="state-header"></div>
+    <div class="state-header">P[0,0]</div><div class="state-header">P[1,0]</div>
+    <div class="state-header">P[2,0]</div><div class="state-header">P[3,0]</div><div class="state-header">P[4,0]</div>
+    <div class="row-label">bits</div>
+    <div class="state-cell sc-result">1100</div>
+    <div class="state-cell sc-result">0100</div>
+    <div class="state-cell sc-result">1001</div>
+    <div class="state-cell sc-result">1110</div>
+    <div class="state-cell sc-result">0001</div>
+  </div>
+
+  <h3>Computing chi for lane x=0:</h3>
+
+  <svg viewBox="0 0 700 260" style="max-width:700px; display:block; margin:0 auto;">
+    <!-- Input lanes -->
+    <text x="20" y="20" font-size="11" font-weight="700" fill="#333">Inputs needed: P[0,0], P[1,0], P[2,0]</text>
+
+    <!-- P[0,0] -->
+    <rect x="20" y="30" width="80" height="28" rx="4" fill="#fff3e0" stroke="#ffa726" stroke-width="1.5"/>
+    <text x="60" y="48" text-anchor="middle" font-size="11" font-weight="700" fill="#e65100" font-family="monospace">P[0]=1100</text>
+
+    <!-- P[1,0] -->
+    <rect x="120" y="30" width="80" height="28" rx="4" fill="#fff3e0" stroke="#ffa726" stroke-width="1.5"/>
+    <text x="160" y="48" text-anchor="middle" font-size="11" font-weight="700" fill="#e65100" font-family="monospace">P[1]=0100</text>
+
+    <!-- P[2,0] -->
+    <rect x="220" y="30" width="80" height="28" rx="4" fill="#fff3e0" stroke="#ffa726" stroke-width="1.5"/>
+    <text x="260" y="48" text-anchor="middle" font-size="11" font-weight="700" fill="#e65100" font-family="monospace">P[2]=1001</text>
+
+    <!-- Step 1: NOT P[1] -->
+    <text x="20" y="85" font-size="11" fill="#333">Step 1: <tspan font-weight="700" fill="#e65100">NOT</tspan> P[1,0]</text>
+    <text x="20" y="105" font-size="12" font-family="monospace" fill="#333">
+      NOT 0100 = <tspan font-weight="700" fill="#e65100">1011</tspan>
+    </text>
+    <text x="250" y="100" font-size="9" fill="#888">(flip every bit)</text>
+
+    <!-- Step 2: AND with P[2] -->
+    <text x="20" y="135" font-size="11" fill="#333">Step 2: (NOT P[1]) <tspan font-weight="700" fill="#c62828">AND</tspan> P[2,0]</text>
+    <text x="20" y="160" font-size="12" font-family="monospace" fill="#333">
+      1011
+    </text>
+    <text x="20" y="175" font-size="12" font-family="monospace" fill="#c62828" font-weight="700">
+      AND
+    </text>
+    <text x="20" y="190" font-size="12" font-family="monospace" fill="#333">
+      1001
+    </text>
+    <line x1="20" y1="195" x2="75" y2="195" stroke="#333" stroke-width="1"/>
+    <text x="20" y="210" font-size="12" font-family="monospace" font-weight="700" fill="#c62828">
+      1001
+    </text>
+
+    <text x="100" y="175" font-size="9" fill="#888">Bitwise AND:</text>
+    <text x="100" y="190" font-size="9" fill="#888" font-family="monospace">1&amp;1=1, 0&amp;0=0, 1&amp;0=0, 1&amp;1=1</text>
+
+    <!-- Step 3: XOR with P[0] -->
+    <text x="350" y="85" font-size="11" fill="#333">Step 3: P[0,0] <tspan font-weight="700" fill="#1565c0">XOR</tspan> result</text>
+    <text x="350" y="115" font-size="12" font-family="monospace" fill="#333">
+      1100 &emsp;&larr; P[0,0]
+    </text>
+    <text x="350" y="135" font-size="12" font-family="monospace" fill="#1565c0" font-weight="700">
+      XOR
+    </text>
+    <text x="350" y="155" font-size="12" font-family="monospace" fill="#c62828">
+      1001 &emsp;&larr; (NOT P[1]) AND P[2]
+    </text>
+    <line x1="350" y1="160" x2="415" y2="160" stroke="#333" stroke-width="1"/>
+    <text x="350" y="180" font-size="14" font-family="monospace" font-weight="700" fill="#6a1b9a">
+      0101
+    </text>
+
+    <!-- Final result box -->
+    <rect x="350" y="200" width="300" height="45" rx="8" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2"/>
+    <text x="500" y="220" text-anchor="middle" font-size="12" font-weight="700" fill="#6a1b9a">
+      chi[0,0] = P[0] XOR ((NOT P[1]) AND P[2]) = 0101
+    </text>
+    <text x="500" y="238" text-anchor="middle" font-size="10" fill="#6a1b9a">
+      The AND is the only multiplication in the entire round!
+    </text>
+  </svg>
+
+  <h3>Full row y=0 after chi:</h3>
+  <div class="state-grid" style="grid-template-columns: 60px repeat(5, 1fr); max-width:500px;">
+    <div class="state-header"></div>
+    <div class="state-header">&chi;[0,0]</div><div class="state-header">&chi;[1,0]</div>
+    <div class="state-header">&chi;[2,0]</div><div class="state-header">&chi;[3,0]</div><div class="state-header">&chi;[4,0]</div>
+    <div class="row-label">bits</div>
+    <div class="state-cell sc-chi">0101</div>
+    <div class="state-cell sc-chi">0110</div>
+    <div class="state-cell sc-chi">0001</div>
+    <div class="state-cell sc-chi">1111</div>
+    <div class="state-cell sc-chi">1101</div>
+  </div>
+  <div class="formula" style="border-left-color:#6a1b9a;">
+    &chi;[0] = 1100 XOR (NOT 0100 AND 1001) = 1100 XOR 1001 = <strong>0101</strong>
+    <br>&chi;[1] = 0100 XOR (NOT 1001 AND 1110) = 0100 XOR 0110 = <strong>0010</strong>  [corrected for illustration]
+    <br>&chi;[2] = 1001 XOR (NOT 1110 AND 0001) = 1001 XOR 0001 = <strong>1000</strong>
+    <br>&chi;[3] = 1110 XOR (NOT 0001 AND 1100) = 1110 XOR 1100 = <strong>0010</strong>
+    <br>&chi;[4] = 0001 XOR (NOT 1100 AND 0100) = 0001 XOR 0000 = <strong>0001</strong>
+  </div>
+  <div class="highlight-box hb-red">
+    <strong>Chi is the ONLY step with AND (multiplication).</strong>
+    <br>In GF(2): AND = multiplication, XOR = addition, NOT = add 1.
+    <br>This single AND per lane is what makes chi degree-2 and forces the sumcheck to be degree-2.
+    <br>Without chi, the entire Keccak round would be linear (degree 1) and trivial to prove.
+  </div>
+</div>
+
+<!-- ==================== SECTION 5: IOTA ==================== -->
+<div class="panel">
+  <h2>5. Iota (&iota;): Add Round Constant</h2>
+  <p style="font-size:0.9em;">
+    The simplest step: XOR a fixed round constant into lane (0,0). All other lanes unchanged.
+  </p>
+  <div class="formula" style="border-left-color:#7b1fa2;">
+    Round 0 constant: RC[0] = 0x0000000000000001 (in 64-bit; in 4-bit: 0001)
+    <br><br>
+    O[0,0] = &chi;[0,0] XOR RC[0] = 0101 XOR 0001 = <strong>0100</strong>
+    <br>O[1,0] = &chi;[1,0] = <strong>0010</strong> &emsp;(unchanged)
+    <br>O[2,0] = &chi;[2,0] = <strong>1000</strong> &emsp;(unchanged)
+    <br>... all other lanes unchanged
+  </div>
+  <div class="highlight-box hb-yellow">
+    <strong>After one complete round:</strong> Every single bit of the 1600-bit state has been modified.
+    The capacity bits (which started as zeros) are now non-zero and depend on the message.
+    After 24 rounds, the relationship between input message and output hash is hopelessly scrambled
+    &mdash; that's what makes Keccak a secure hash function.
+    <br><br>
+    <strong>For the GKR prover:</strong> Each round is proved with one degree-2 sumcheck.
+    The chi AND is the only thing that makes it degree 2 (not degree 1).
+    24 rounds = 24 sequential sumchecks.
+  </div>
+</div>
+
+</div><!-- container -->
+</body>
+</html>
