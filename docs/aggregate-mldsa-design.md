@@ -187,10 +187,15 @@ sharing.
   [`crates/mldsa/src/zq.rs`](../crates/mldsa/src/zq.rs):
   `add`, `sub`, `mul`, `from_u64_witness` — proptest-validated against
   the native reference in [`crates/mldsa/tests/zq.rs`](../crates/mldsa/tests/zq.rs).
-- [x] SHAKE256 single-block wrapper in
+- [x] SHAKE256 wrapper in
   [`crates/mldsa/src/shake.rs`](../crates/mldsa/src/shake.rs), cross-validated
   against the `sha3` crate in
   [`crates/mldsa/tests/shake.rs`](../crates/mldsa/tests/shake.rs).
+  Initial Phase 0 cut was a single-block-only `shake256_fixed`; Phase 1
+  generalised it to multi-block absorb + cross-block squeeze + a
+  `Shake256Sponge` cursor type whose multiple `squeeze` calls compose
+  into the same byte stream a single long squeeze would produce
+  (required by R3's Fisher-Yates rejection loop).
 - [x] `MlDsaVerifier` and `AggregateMlDsaVerifier` `unimplemented!()`
   stubs whose tests are `#[ignore]`'d with phase pointers (see
   [`crates/mldsa/tests/verifier_smoke.rs`](../crates/mldsa/tests/verifier_smoke.rs)).
@@ -219,12 +224,19 @@ runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
   - [ ] `unpack_h` (variable-length hint encoding with rejection
     conditions; non-trivial since the C parser has data-dependent
     control flow — needs a multiplexer-based design).
-- [ ] R3: `SampleInBall(c̃)` — extends `shake::shake256_fixed` to a
-  multi-block streaming API; emits a sparse polynomial with `τ = 39`
-  `±1` non-zero coefficients via Fisher-Yates.
+- [ ] R3: `SampleInBall(c̃)` — runs `Shake256Sponge` (Phase 0/1
+  generalised) seeded by `c̃`, emits a sparse polynomial with `τ = 39`
+  `±1` non-zero coefficients via Fisher-Yates with rejection sampling.
+  SHAKE streaming prerequisite is now in; only the Fisher-Yates loop
+  (mux-based since the rejection rate is data-dependent) remains.
 - [ ] R6: `Decompose` + `UseHint` + `w1Encode` over the 1024
   `wApprox` coefficients, using `zq` gadgets.
 - [ ] R7: `c̃' = SHAKE256(μ ‖ w₁')` + binding equality `c̃' == c̃`.
+  SHAKE streaming prerequisite is now in (the `r7_worst_case_input`
+  test in [`crates/mldsa/tests/shake.rs`](../crates/mldsa/tests/shake.rs)
+  exercises the exact 832-byte multi-block absorb + 32-byte squeeze
+  shape R7 will use); pending pieces are `w1Encode` (small bit-packing,
+  inverse of `polyz_pack`-style) and the framing wrapper.
 - [ ] Wire up KAT verification: pull KATs from
   `dilithium/ref/nistkat`, run them through the `binius-prover` /
   `binius-verifier` end-to-end, flip on
