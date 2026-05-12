@@ -209,9 +209,13 @@ runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
     and `assert_norm_centered` (`β < centered < 2γ₁ − β` per coefficient)
     in [`crates/mldsa/src/polyz.rs`](../crates/mldsa/src/polyz.rs); 14
     tests in [`crates/mldsa/tests/polyz.rs`](../crates/mldsa/tests/polyz.rs).
-  - [ ] `unpack_z` wrapper for the `L = 4` polynomials inside the full
-    signature byte stream (composes 4 × `polyz_unpack_centered`).
-  - [ ] `unpack_c_tilde` (trivial: 32 bytes → 4 × 64-bit lanes).
+  - [x] `unpack_z` wrapper for the `L = 4` polynomials inside the full
+    signature byte stream and `unpack_c_tilde` (trivial 32-byte slice)
+    in [`crates/mldsa/src/sigdecode.rs`](../crates/mldsa/src/sigdecode.rs);
+    7 tests in [`crates/mldsa/tests/sigdecode.rs`](../crates/mldsa/tests/sigdecode.rs)
+    covering the round-trip, per-polynomial isolation, c̃-vs-z
+    isolation, and the full sigdecode + norm-check accept / reject end
+    to end.
   - [ ] `unpack_h` (variable-length hint encoding with rejection
     conditions; non-trivial since the C parser has data-dependent
     control flow — needs a multiplexer-based design).
