@@ -52,8 +52,9 @@ impl AggregateMlDsaVerifier {
 	/// # Panics
 	///
 	/// Phase 0: always panics. Phase 4 (flat composition) will instantiate
-	/// `n_signatures` copies of [`MlDsaVerifier`] under disjoint sub-circuit
-	/// namespaces and share the cross-field bridge.
+	/// `n_signatures` copies of [`MlDsaVerifier::new`] (now a real Phase 1
+	/// verifier with its own input-wire signature) under disjoint
+	/// sub-circuit namespaces and share the cross-field bridge.
 	pub fn new(_b: &CircuitBuilder, mode: Mode, n_signatures: usize) -> Self {
 		assert!(matches!(mode, Mode::Mode2), "Phase 0 only supports Mode2");
 		assert!(n_signatures > 0, "n_signatures must be positive");

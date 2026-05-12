@@ -1,72 +1,123 @@
 // Copyright 2026 The Binius Developers
 
-//! Single-signature ML-DSA (FIPS 204 / Dilithium) verifier circuit.
+//! Single-signature ML-DSA (FIPS 204 / Dilithium2) verifier circuit —
+//! Phase 1 R5-hoisted variant.
 //!
-//! ## Status: Phase 0 stub
+//! ## What this Phase 1 verifier wires
 //!
-//! This module is intentionally an `unimplemented!()` skeleton; the type
-//! shape is fixed so that Phase 1 can fill in the constraint logic without
-//! breaking any downstream call sites in `aggregate` or in tests.
+//! ```text
+//!  σ (signature byte stream)  ──►  unpack_c_tilde  ──►  c̃ (4 lanes)
+//!                              ──►  unpack_z       ──►  z (L=4 polys)
+//!                                                       ──► assert_norm_centered
+//!  μ (8 lanes, public hoisted)
+//!  wApprox (K=4 polys, public hoisted)  ┐
+//!  hint    (K=4 polys, public hoisted)  ├──►  assert_r7  (uses c̃ from above)
+//!                                       ┘
+//! ```
 //!
-//! ## What Phase 1 lands here
+//! That is, R1 (`sigDecode` for `c̃` and `z`, plus the `‖z‖∞ < γ₁ − β`
+//! norm check) is emitted in-circuit, R7 (the final-hash binding
+//! equality) is emitted in-circuit, and R5 + the hint-byte parser are
+//! "hoisted" out of the circuit — supplied to it as public inputs.
 //!
-//! Per the sub-relation table in `docs/aggregate-mldsa-design.md`, Phase 1
-//! wires up the four Binius64-track sub-relations against constants from
-//! [`crate::params::Mode2`] using the [`crate::zq`] field gadgets and the
-//! [`crate::shake`] SHAKE256 wrapper:
+//! ## Phase 1 limitations (each tracked in `docs/aggregate-mldsa-design.md`)
 //!
-//! - **R1** — `sigDecode(σ)` and `‖z‖ < γ₁ − β` range check
-//!   (`L · 256 = 1024` independent range checks for Dilithium2).
-//! - **R3** — `c = SampleInBall(c̃)` via SHAKE256 + Fisher-Yates with
-//!   rejection sampling. Output: a sparse polynomial with `τ = 39`
-//!   non-zero `±1` coefficients.
-//! - **R6** — `Decompose` + `UseHint` + `w1Encode` over the `K · 256 =
-//!   1024` coefficients of `wApprox`. Reads `wApprox` as a bridged value
-//!   from R5 (Phase 2 wires the bridge; Phase 1 takes it as a public
-//!   input).
-//! - **R7** — `c̃' = SHAKE256(μ ‖ w₁')` and the binding equality
-//!   `c̃' == c̃`.
+//! - **`wApprox` is hoisted from R5.** In the canonical FIPS-204
+//!   verifier, `wApprox = A · z − c · t₁ · 2^D` is computed in the
+//!   `Z_q[X]/(X²⁵⁶ + 1)` ring. Phase 2 brings this in-circuit via the
+//!   Akita lattice PCS bridge. For Phase 1 the off-circuit verifier
+//!   computes it natively (using its own SampleInBall + ExpandA + NTT)
+//!   and feeds it as a public input. In particular the *signature
+//!   binding* of `wApprox` — that it actually equals
+//!   `A·z − c·t₁·2^D` for the supplied `z` and the `c̃`-derived `c` —
+//!   is not yet enforced by these constraints.
+//! - **`hint` is hoisted.** R1's variable-length `unpack_h` parser is
+//!   the last remaining R1 piece. Until it lands, the `K · N` hint
+//!   bits are taken as separate public-input wires rather than parsed
+//!   from `σ`'s `h` section.
+//! - **R3 SampleInBall is not constrained.** With R5 hoisted, the
+//!   in-circuit polynomial `c` would be unused (it's R5's only
+//!   consumer), so we don't allocate or constrain it. R3 will land in
+//!   Phase 2 alongside R5, where the cascade actually carries it.
 //!
-//! R5 (`w = A·z − c·t₁·2^D` in `Z_q[X]/(X²⁵⁶+1)`) is the lattice-track
-//! sub-relation; it lives in a separate Phase 2 module that talks to the
-//! Akita PCS.
+//! ## What R7 cascade still gets us
 //!
-//! ## What stays out of this module
-//!
-//! - **R2 (`tr, μ`)** and **R4 (`A = ExpandA(ρ)`)** are pure hashes of
-//!   public inputs and are hoisted to the verifier (no proof cost). They
-//!   are computed natively by the caller using the `sha3` crate.
-//! - **R5** lives in a future `crate::lattice` module that will use the
-//!   Akita PCS; see Phase 2 in the design doc.
+//! Even with the hoisting above, R7's binding equality
+//! `c̃ == SHAKE256(μ ‖ PackW1(use_hint(wApprox, hint)))` ties together
+//! the part of the chain that's actually in-circuit: tampering `c̃`,
+//! `μ`, `wApprox`, or `hint` — or producing a `z` that's out of
+//! norm — is detected. The pieces that aren't in-circuit (the
+//! `wApprox <-> z`, `c <-> c̃`, and `h_bytes <-> hint` bindings)
+//! become assumptions the off-circuit verifier carries; Phase 2/3
+//! retire those assumptions.
 
 use binius_frontend::{CircuitBuilder, Wire};
 
-use crate::params::Mode;
+use crate::{
+	params::{MODE2, N},
+	polyz::assert_norm_centered,
+	r7::{C_TILDE_LANES, MU_LANES, assert_r7},
+	sigdecode::{SIG_PACKED_LANES, unpack_c_tilde, unpack_z},
+};
 
-/// Single-signature ML-DSA verifier circuit. Phase 0 stub — see module
-/// docs for what Phase 1 lands.
-#[derive(Debug)]
+const L: usize = MODE2.l;
+const K: usize = MODE2.k;
+
+/// In-circuit single-signature ML-DSA-44 (Dilithium2) verifier.
+///
+/// All four input slices are caller-supplied wires; the constructor
+/// emits the R1 + R7 constraint subcircuits and exposes the
+/// signature-extracted `c̃` and `z` as fields for downstream use
+/// (e.g. the upcoming aggregator).
+#[derive(Debug, Clone)]
 pub struct MlDsaVerifier {
-	/// Selected ML-DSA parameter set (only `Mode::Mode2` accepted in
-	/// Phase 0; will gain `Mode3`/`Mode5` in Phase 5).
-	pub mode: Mode,
-	/// Public-input wires for `c̃` (32 bytes packed as 4 × 64-bit).
-	pub c_tilde: [Wire; 4],
+	/// `c̃` extracted from `σ` — 4 LE 64-bit lanes (32 bytes).
+	pub c_tilde: [Wire; C_TILDE_LANES],
+	/// `z` extracted from `σ` — L = 4 polynomials of N = 256 centered
+	/// coefficients each (each in `[0, 2γ₁ − 1]`, post-norm-check).
+	pub z: [[Wire; N]; L],
 }
 
 impl MlDsaVerifier {
-	/// Construct an in-circuit verifier for one ML-DSA signature.
+	/// Build the Phase 1 ML-DSA-44 verifier circuit on top of the
+	/// supplied input wires.
 	///
-	/// # Panics
+	/// Inputs:
 	///
-	/// Phase 0: always panics with [`unimplemented!`]. Phase 1 will
-	/// allocate the public-input wires for `(pk, sig, μ, c, A, t₁·2^D,
-	/// wApprox)` and emit the R1 / R3 / R6 / R7 constraint subcircuits.
-	pub fn new(_b: &CircuitBuilder, mode: Mode) -> Self {
-		assert!(matches!(mode, Mode::Mode2), "Phase 0 only supports Mode2");
-		unimplemented!(
-			"binius-mldsa Phase 1: see `docs/aggregate-mldsa-design.md` \
-			 for the sub-relation breakdown that this constructor wires up"
-		);
+	/// - `sig` — the 2420-byte packed signature, as 303 LE 64-bit
+	///   lanes.
+	/// - `mu_lanes` — `μ` (the hoisted message hash from R2), as 8
+	///   LE 64-bit lanes.
+	/// - `w_approx` — `K = 4` polynomials of `N = 256` Z_q
+	///   coefficients each (the hoisted R5 output). Each coefficient
+	///   is assumed canonical `[0, Q − 1]`; the supplier should use
+	///   [`crate::zq::from_u64_witness`] when allocating.
+	/// - `hint` — `K = 4` polynomials of `N = 256` 0/1 wires each
+	///   (the hoisted hint vector from `σ`'s `h` section). Each bit
+	///   is range-checked `< 2` inside `r7::use_hint_polyvec`.
+	///
+	/// On return, the struct exposes the unpacked `c̃` (4 lanes) and
+	/// `z` polynomials (L × N centered coefficients) as wires the
+	/// caller can read for downstream wiring (e.g. aggregation, or
+	/// later phases that bind the hoisted inputs back to the
+	/// signature).
+	pub fn new(
+		b: &CircuitBuilder,
+		sig: &[Wire; SIG_PACKED_LANES],
+		mu_lanes: &[Wire; MU_LANES],
+		w_approx: &[[Wire; N]; K],
+		hint: &[[Wire; N]; K],
+	) -> Self {
+		// R1: sigDecode (c̃ and z) + norm check on z.
+		let c_tilde = unpack_c_tilde(sig);
+		let z = unpack_z(b, sig);
+		for poly in &z {
+			assert_norm_centered(b, poly);
+		}
+
+		// R7: c̃ == SHAKE256(μ ‖ PackW1(use_hint(wApprox, hint))).
+		assert_r7(b, w_approx, hint, mu_lanes, &c_tilde);
+
+		Self { c_tilde, z }
 	}
 }
