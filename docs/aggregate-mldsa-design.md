@@ -203,8 +203,18 @@ wApprox`) as public inputs (R5 hoisted to the verifier — it natively
 runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
 + R6 + R7 in Binius64.
 
-- [ ] R1: `sigDecode` (bit-packed `z` / `h` decoding) + `‖z‖ < γ₁ − β`
+- R1: `sigDecode` (bit-packed `z` / `h` decoding) + `‖z‖ < γ₁ − β`
   (1024 range checks).
+  - [x] `polyz_unpack_centered` (576-byte → 256-coefficient unpacker)
+    and `assert_norm_centered` (`β < centered < 2γ₁ − β` per coefficient)
+    in [`crates/mldsa/src/polyz.rs`](../crates/mldsa/src/polyz.rs); 14
+    tests in [`crates/mldsa/tests/polyz.rs`](../crates/mldsa/tests/polyz.rs).
+  - [ ] `unpack_z` wrapper for the `L = 4` polynomials inside the full
+    signature byte stream (composes 4 × `polyz_unpack_centered`).
+  - [ ] `unpack_c_tilde` (trivial: 32 bytes → 4 × 64-bit lanes).
+  - [ ] `unpack_h` (variable-length hint encoding with rejection
+    conditions; non-trivial since the C parser has data-dependent
+    control flow — needs a multiplexer-based design).
 - [ ] R3: `SampleInBall(c̃)` — extends `shake::shake256_fixed` to a
   multi-block streaming API; emits a sparse polynomial with `τ = 39`
   `±1` non-zero coefficients via Fisher-Yates.

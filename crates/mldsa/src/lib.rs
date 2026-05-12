@@ -47,6 +47,7 @@
 
 pub mod aggregate;
 pub mod params;
+pub mod polyz;
 pub mod shake;
 pub mod verifier;
 pub mod zq;
