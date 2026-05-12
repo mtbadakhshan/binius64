@@ -1,0 +1,714 @@
+\documentclass[11pt,a4paper]{article}
+
+% ----------------------------------------------------------------------------
+% Packages
+% ----------------------------------------------------------------------------
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage[colorlinks=true, linkcolor=blue!50!black, citecolor=blue!50!black,
+            urlcolor=blue!50!black]{hyperref}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage{booktabs}
+\usepackage{enumitem}
+
+% ----------------------------------------------------------------------------
+% Theorem environments
+% ----------------------------------------------------------------------------
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{construction}[theorem]{Construction}
+
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+% ----------------------------------------------------------------------------
+% Custom macros — domain-specific
+% ----------------------------------------------------------------------------
+% Fields
+\newcommand{\binF}{\mathbb{F}_{2^{128}}}        % Binius oracle field (B128/GHash)
+\newcommand{\akF}{\mathbb{F}_{p}}                % Akita prime field (fp128)
+\newcommand{\F}{\mathbb{F}}                       % generic field
+\newcommand{\GF}[1]{\mathbb{F}_{#1}}             % \GF{2}, \GF{2^k}
+
+% Common objects
+\newcommand{\BiniusScalar}{\mathsf{BiniusScalar}}
+\newcommand{\AkitaFieldScalar}{\mathsf{AkitaFieldScalar}}
+\newcommand{\eq}{\mathrm{eq}}                    % equality polynomial
+\newcommand{\MLE}[1]{\widetilde{#1}}              % multilinear extension overlay
+
+% Protocol-specific
+\newcommand{\BitTable}{B}                         % the bit-table multilinear
+\newcommand{\Transparent}{t}                      % transparent oracle vector
+\newcommand{\Message}{m}                          % message / committed oracle vector
+\newcommand{\selectedPoint}{r_s}                  % output of selected-sum sumcheck
+\newcommand{\boolPoint}{r_b}                      % output of booleanity sumcheck
+\newcommand{\reducedPoint}{r_*}                   % output of claim-reduction sumcheck
+\newcommand{\evalSelected}{e_s}                   % B(\selectedPoint)
+\newcommand{\evalBool}{e_b}                       % B(\boolPoint)
+
+% Crypto shorthand
+\newcommand{\bits}{\{0,1\}}
+\newcommand{\negl}{\mathsf{negl}}
+\DeclareMathOperator{\Lagrange}{Lagrange}
+
+% Boxed final results
+\newcommand{\boxedid}[1]{\boxed{\ #1\ }}
+
+% ----------------------------------------------------------------------------
+% Title
+% ----------------------------------------------------------------------------
+\title{The Akita Bridge:\\
+\large Binius$_{2^{128}}$-IOP $\,\to\,$ Akita lattice-PCS over $\F_p$}
+\author{Binius64 maintainers}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document specifies the \emph{Akita bridge} component of Binius64.
+The bridge translates an \emph{oracle relation} stated over the binary
+tower field $\binF$ (the field Binius's interactive oracle protocols
+speak natively) into a \emph{polynomial-commitment opening} over a prime
+field $\akF$ (the field the Akita lattice PCS speaks natively). Three
+opening variants are presented: \textsf{full-open} (non-succinct;
+testing-only), \textsf{succinct} (succinct, two-point batched opening),
+and \textsf{claim-reduced} (succinct, single-point opening via a
+claim-reduction sumcheck). Per-step soundness is analysed; the dominant
+error term is identified.
+
+This document is the canonical mathematical specification of the
+bridge. The Rust implementation in
+\verb|crates/akita-bridge/| and
+\verb|crates/akita-bridge-prover/| follows section-by-section.
+\end{abstract}
+
+\tableofcontents
+
+\bigskip\hrule\bigskip
+
+
+% ============================================================================
+\section{Setting}
+\label{sec:setting}
+% ============================================================================
+
+Binius64's proof system, on each iteration of its interactive oracle
+protocol (IOP), reduces a fragment of the circuit's satisfiability claim
+to one or more \emph{oracle relations} of the form
+\[
+  \langle \Message, \Transparent \rangle \;=\; e
+  \qquad \text{(in } \binF \text{)},
+\]
+where:
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item $\Message \in \binF^{L}$ is the committed oracle (the prover
+        has previously sent a commitment to its multilinear extension);
+  \item $\Transparent \in \binF^{L}$ is a \emph{transparent} vector,
+        known explicitly to both parties (either materialised or
+        evaluable via a closure);
+  \item $e \in \binF$ is the claimed inner product;
+  \item $L = 2^{\ell}$ where $\ell$ is the log-length of the oracle.
+\end{itemize}
+
+The verifier must check that this inner product holds, given a
+commitment to $\Message$ but without seeing $\Message$ itself.
+
+The native way to discharge this claim in Binius would be to run a
+sumcheck protocol over $\binF$ and discharge the residual evaluation
+$\Message(r)$ through a $\binF$-flavoured polynomial commitment scheme
+(BaseFold, in the default deployment). The Akita bridge instead routes
+this claim through a \emph{lattice-based} PCS that operates over a
+\emph{prime field} $\akF$, specifically $\akF \;=\;
+\mathsf{Prime128Offset275}$, a 128-bit pseudo-Mersenne prime field. The
+bridge's job is to translate the claim from $\binF$-language into
+$\akF$-language soundly.
+
+\paragraph{Why bridge to a prime field at all?}
+The lattice PCS has two appealing properties Binius does not get from
+BaseFold:
+
+\begin{enumerate}[leftmargin=*, itemsep=2pt]
+  \item \emph{Post-quantum security.} Akita's binding rests on the
+        hardness of Short Integer Solutions (SIS) over module lattices,
+        which is plausibly post-quantum-secure under standard
+        assumptions. BaseFold's binding rests on collision-resistance
+        of the underlying hash family.
+  \item \emph{Smaller proofs for moderate-size oracles.} For our
+        bit-table workloads at $2^{17}$–$2^{20}$ bits committed, the
+        Akita opening is $\sim 80$–$100$\,KB, comparable to or smaller
+        than the BaseFold equivalent.
+\end{enumerate}
+
+The cost is two non-trivial bridges of mathematics: from a binary tower
+field into a prime field (Sections~\ref{sec:bit-slicing} and
+\ref{sec:parity-bridge}), and from a multi-oracle interactive argument
+into the single-polynomial PCS opening that Akita supports
+(Sections~\ref{sec:selected-sum}--\ref{sec:closing}).
+
+
+% ============================================================================
+\section{Notation and preliminaries}
+\label{sec:notation}
+% ============================================================================
+
+\subsection*{Fields}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item $\binF$ is the binary tower field of order $2^{128}$ (Binius's
+        $\mathsf{BinaryField128bGhash}$). It is the field over which
+        Binius oracle relations are stated.
+  \item $\akF$ is the Akita prime field of order $p$, where
+        $p = 2^{128} + 275$ (specifically: a pseudo-Mersenne prime). It
+        is the field over which the Akita PCS commits and opens.
+  \item $\GF{2}$ is the prime subfield $\{0, 1\}$. Both $\binF$ and
+        $\akF$ contain $\GF{2}$ as a subset (trivially, in the second
+        case: under the identification $0 \leftrightarrow 0_{\akF}$ and
+        $1 \leftrightarrow 1_{\akF}$).
+\end{itemize}
+
+\subsection*{Multilinear extensions}
+
+For a vector $v = (v_0, \ldots, v_{N-1}) \in \F^{N}$ where $N = 2^n$, its
+\emph{multilinear extension} (MLE) $\MLE{v} : \F^n \to \F$ is the unique
+multilinear polynomial in $n$ variables such that
+$\MLE{v}(\mathbf{i}) = v_i$ for every $\mathbf{i} \in \bits^n$ identified
+with its binary representation. Explicitly,
+\[
+  \MLE{v}(\mathbf{x}) \;=\; \sum_{\mathbf{i} \in \bits^n}
+    v_i \cdot \eq(\mathbf{i}, \mathbf{x}),
+\]
+where $\eq(\mathbf{i}, \mathbf{x}) = \prod_{k=0}^{n-1} \bigl(i_k x_k
++ (1 - i_k)(1 - x_k)\bigr)$ is the \emph{equality polynomial} that
+evaluates to $1$ when $\mathbf{i} = \mathbf{x}$ and $0$ otherwise (for
+$\mathbf{x} \in \bits^n$). For $\mathbf{x} \in \F^n$ arbitrary,
+$\eq(\cdot, \mathbf{x})$ acts as a Lagrange interpolation basis.
+
+\subsection*{Inner products}
+
+For $u, v \in \F^N$ we write $\langle u, v \rangle = \sum_{i=0}^{N-1}
+u_i v_i \in \F$ for the usual (componentwise) inner product.
+Equivalently, in MLE language,
+\[
+  \langle u, v \rangle \;=\; \sum_{\mathbf{x} \in \bits^n}
+    \MLE{u}(\mathbf{x}) \cdot \MLE{v}(\mathbf{x}).
+\]
+
+\subsection*{Constants}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item $w := 128$ — the number of bits in one $\binF$ element.
+  \item $L := 2^{\ell}$ — the number of $\binF$ elements in the oracle;
+        $\ell$ is the \emph{log-msg-len} parameter the bridge takes from
+        the caller.
+  \item $N := L \cdot w = 2^{\ell + 7}$ — the size of the bit-table
+        we will commit to (Section~\ref{sec:bit-slicing}).
+  \item $n := \ell + 8$ — the number of variables of the OneHotPoly we
+        commit (one extra variable comes from the $\mathsf{K}=2$ encoding
+        of each bit; Section~\ref{sec:commitment}).
+\end{itemize}
+
+
+% ============================================================================
+\section{The oracle relation}
+\label{sec:oracle-relation}
+% ============================================================================
+
+We restate the relation to be proved precisely.
+
+\begin{definition}[Oracle linear relation]
+\label{def:oracle-relation}
+Given:
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item a committed oracle $\Message \in \binF^L$ (the verifier has a
+        commitment to $\MLE{\Message}$ but does not see $\Message$);
+  \item a transparent vector $\Transparent \in \binF^L$ (both parties
+        agree on it, either materialised explicitly or via an MLE
+        evaluator closure);
+  \item a public claim $e \in \binF$;
+\end{itemize}
+the \emph{oracle linear relation} is the predicate
+\[
+  \langle \Message, \Transparent \rangle \;\stackrel{?}{=}\; e
+  \qquad \text{(equality in } \binF \text{)}.
+\]
+\end{definition}
+
+The bridge's task is to convince the verifier that the relation holds,
+in three stages that progressively reshape the claim:
+
+\begin{enumerate}[leftmargin=*, itemsep=2pt]
+  \item[\textbf{Stage A.}] Bridge $\binF$-arithmetic into
+        $\akF$-arithmetic without leaving any soundness slack
+        (Section~\ref{sec:bit-slicing} and
+        Section~\ref{sec:parity-bridge}).
+  \item[\textbf{Stage B.}] Reduce the resulting $\akF$-side claim to
+        evaluations of a single committed polynomial $\MLE{\BitTable}$
+        at one or two random points
+        (Section~\ref{sec:selected-sum} and
+        Section~\ref{sec:booleanity}).
+  \item[\textbf{Stage C.}] Discharge those evaluation claims by opening
+        a single committed OneHotPoly via Akita's PCS
+        (Section~\ref{sec:closing} and
+        Sections~\ref{sec:variant-succinct}--\ref{sec:variant-claim-reduced}).
+\end{enumerate}
+
+\subsection{What the bridge inherits from Binius (and what it does not)}
+\label{sec:inherits-from-binius}
+
+It is worth being explicit about the granularity of the bridge's
+input. Binius's IOP layer reduces a circuit's AND / MUL / shift
+constraints to a small number of oracle inner-product relations of the
+form in Definition~\ref{def:oracle-relation}. Those reductions
+\emph{do} involve bit-level reasoning internally (the AND reduction
+runs a sumcheck over a $\GF{2}$-bilinear product polynomial, for
+example), but their \emph{output} is at field-element granularity:
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item the committed oracle $\Message$ is a vector of \emph{$\binF$
+        elements}, not bits — Binius commits at field-element
+        granularity because per-bit commitment would inflate proof and
+        witness sizes by a factor of $w = 128$;
+  \item the transparent vector $\Transparent$ and the public claim $e$
+        are likewise $\binF$ objects;
+  \item the only operations Binius itself performs on these objects
+        before handing them to the bridge are $\binF$-additions and
+        $\binF$-multiplications by public constants.
+\end{itemize}
+
+In particular, the prover does \emph{not} hand the bridge a separate
+bit-table commitment. The bit-slicing of Section~\ref{sec:bit-slicing}
+is the bridge's own re-interpretation of $\Message \in \binF^L$ as a
+flat array of $N = L w$ bits, applied freshly inside the bridge — on
+the prover side by decomposing each $\Message_i$ into its
+$\GF{2}$-basis coordinates, on the verifier side by the same trivial
+extraction once the bit-table is committed.
+
+This decomposition is what makes the field-bridging trick of
+Section~\ref{sec:parity-bridge} possible: $\binF$-multiplication has no
+useful homomorphism into $\akF$, but $\GF{2}$-addition (XOR of bits)
+coincides with $\akF$-addition modulo $2$, which is checkable in $\akF$
+without slack.
+
+\begin{remark}[Interchangeability]
+The bridge is agnostic to how the input relation was produced. Anything
+upstream that exposes an oracle linear relation over $\binF$ — Binius64
+in our deployment, but also Iron Spartan or a future system — can plug
+into the bridge unchanged.
+\end{remark}
+
+
+% ============================================================================
+\section{Bit-slicing the oracle}
+\label{sec:bit-slicing}
+% ============================================================================
+
+The first move is purely structural: we re-express the oracle
+$\Message \in \binF^L$ as a flat \emph{bit-table} of $N = L \cdot w
+= 2^{\ell + 7}$ Boolean values, so that every subsequent step can
+operate on individual bits rather than $\binF$ elements.
+
+\subsection{The \texorpdfstring{$\GF{2}$}{F\_2}-basis decomposition}
+
+$\binF = \GF{2^{128}}$ is a $w$-dimensional vector space over its prime
+subfield $\GF{2}$. Fix once and for all an arbitrary $\GF{2}$-basis
+$\mathcal{B} = (e_0, e_1, \ldots, e_{w-1})$ of $\binF$.\footnote{In the
+implementation we use the implicit basis induced by the
+\texttt{BinaryField128bGhash} raw byte layout: each element is stored
+as a \texttt{u128}, and bit $j$ of that \texttt{u128} is its
+$e_j$-coordinate. The bridge's soundness does not depend on the
+specific choice of $\mathcal{B}$ — only that the map
+$\binF \to \bits^{w}$ it induces is bijective.} Every $u \in \binF$
+has a unique decomposition
+\[
+  u \;=\; \sum_{j=0}^{w-1} u^{(j)} \cdot e_j,
+  \qquad u^{(j)} \in \GF{2}.
+\]
+We refer to $u^{(j)}$ as \emph{the $j$-th bit of $u$} and denote the
+extraction by $\beta_j : \binF \to \GF{2},\; u \mapsto u^{(j)}$.
+
+\subsection{The bit-table}
+
+\begin{definition}[Bit-table]
+\label{def:bit-table}
+Given the oracle $\Message = (\Message_0, \ldots, \Message_{L-1}) \in
+\binF^L$, the \emph{bit-table} is the array
+\[
+  \BitTable \in \bits^{L \times w},
+  \qquad
+  \BitTable_{i,j} \;:=\; \beta_j(\Message_i),
+  \quad
+  0 \le i < L,\ 0 \le j < w.
+\]
+\end{definition}
+
+\begin{remark}[Layout]
+\label{rem:bit-table-layout}
+Flattened, $\BitTable$ is a length-$N$ vector with the convention that
+\emph{the bit index $j$ varies fastest}. That is, if we define
+$\mathsf{flat}(B) \in \bits^N$ by $\mathsf{flat}(B)[i \cdot w + j] :=
+\BitTable_{i,j}$, then traversing $\mathsf{flat}(B)$ in order visits all
+$w$ bits of element $0$, then all $w$ bits of element $1$, etc. With
+$N = 2^{\ell + 7}$, the binary index $\mathbf{x} \in \bits^{\ell + 7}$
+of a flat slot splits as
+\[
+  \mathbf{x} \;=\; \bigl(\underbrace{x_0, \ldots, x_6}_{=\, j \text{ in
+  binary}},\; \underbrace{x_7, \ldots, x_{\ell + 6}}_{=\, i \text{ in
+  binary}}\bigr),
+\]
+so the lowest 7 variables address \emph{bit-within-element} and the
+remaining $\ell$ variables address \emph{element index}.
+\end{remark}
+
+\subsection{Embedding into \texorpdfstring{$\akF$}{F\_p}}
+
+To take the bit-table into Akita-land we embed $\GF{2}$ into the prime
+field via the obvious map
+\[
+  \iota : \GF{2} \hookrightarrow \akF,
+  \qquad 0 \mapsto 0_{\akF}, \quad 1 \mapsto 1_{\akF}.
+\]
+This is a ring homomorphism on the source's additive structure (since
+$1_{\akF} + 1_{\akF} = 2_{\akF} \ne 0_{\akF}$, it is \emph{not} a ring
+homomorphism overall, but addition modulo $2$ on $\GF{2}$ becomes
+ordinary integer addition modulo $p$ on $\akF$, which we will exploit
+deliberately in Section~\ref{sec:parity-bridge}). We abuse notation and
+write $\BitTable \in \akF^N$ for the image under $\iota$ of the flat
+bit-table; this is the object the rest of the protocol manipulates.
+
+\begin{definition}[Bit-table MLE]
+\label{def:bit-table-mle}
+$\MLE{\BitTable} : \akF^{\ell + 7} \to \akF$ is the unique multilinear
+extension of the flat bit-table (post-embedding):
+\[
+  \MLE{\BitTable}(\mathbf{x})
+  \;=\; \sum_{\mathbf{i} \in \bits^{\ell + 7}}
+        \iota(\BitTable_{\mathsf{unflatten}(\mathbf{i})})
+        \cdot \eq(\mathbf{i}, \mathbf{x}).
+\]
+By construction $\MLE{\BitTable}(\mathbf{i}) \in \{0_{\akF}, 1_{\akF}\}$
+for every $\mathbf{i} \in \bits^{\ell + 7}$ — a fact the verifier will
+later enforce \emph{cryptographically} (Section~\ref{sec:booleanity})
+because the prover cannot otherwise be trusted to commit to a Boolean
+table.
+\end{definition}
+
+\subsection{Properties}
+
+The decomposition has three properties we will rely on repeatedly:
+
+\begin{lemma}[Inversion]
+\label{lem:bit-table-inversion}
+Given the bit-table $\BitTable$, the oracle is recoverable via
+$\Message_i = \sum_{j=0}^{w-1} \BitTable_{i,j} \cdot e_j \in \binF$.
+The map $\Message \leftrightarrow \BitTable$ is bijective.
+\end{lemma}
+\begin{proof}
+Immediate from uniqueness of $\GF{2}$-basis decomposition.
+\end{proof}
+
+\begin{lemma}[Cardinality and dimension]
+\label{lem:bit-table-card}
+Committing to the bit-table requires $N = L \cdot w = 2^{\ell + 7}$
+Boolean values, equivalently $\ell + 7$ MLE variables (one extra
+variable in the OneHotPoly encoding — see
+Section~\ref{sec:commitment} — brings the variable count to $n = \ell
++ 8$).
+\end{lemma}
+
+\begin{lemma}[Linearity of inner products]
+\label{lem:inner-product-bilinearity}
+For any $u, v \in \binF$, $\langle u, v \rangle_{\binF}$ (the product
+in $\binF$) decomposes \emph{linearly} into a $\GF{2}$-bilinear
+combination of bits of $u$ and bits of $v$:
+\[
+  uv \;=\; \sum_{j, k} \beta_j(u) \beta_k(v) \cdot (e_j e_k)
+  \quad \text{in } \binF,
+\]
+and each output bit $\beta_m(uv) \in \GF{2}$ is a fixed $\GF{2}$-linear
+combination of the products $\beta_j(u) \beta_k(v)$. The combination
+coefficients are determined entirely by the basis $\mathcal{B}$ and are
+publicly computable.
+\end{lemma}
+
+Lemma~\ref{lem:inner-product-bilinearity} is what makes the parity
+bridge of Section~\ref{sec:parity-bridge} possible: each output bit of
+$\langle \Message, \Transparent \rangle_{\binF}$ is a parity sum (i.e.\
+$\GF{2}$-linear combination) over fixed subsets of the bit-table, so a
+verifier holding only the bit-table can independently re-compute every
+output bit.
+
+\paragraph{Implementation.}
+\verb|BitSliceOracle::from_binius_oracle| in
+\verb|crates/akita-bridge/src/protocol.rs| materialises the bit-table
+into a $w \times L$ matrix \verb|bit_polys|, with the convention
+\verb|bit_polys[j][i] = beta_j(M_i)| (note: bit index first, element
+index second — the transpose of Definition~\ref{def:bit-table}). The
+flattening of Remark~\ref{rem:bit-table-layout} is realised by
+\verb|to_bit_table_evals|, which iterates the element index in the
+outer loop and the bit index in the inner loop, recovering the
+$j$-varies-fastest ordering.
+
+
+% ============================================================================
+\section{Bridging fields: the parity identity}
+\label{sec:parity-bridge}
+% ============================================================================
+
+\textsf{[Section to be filled in.]}
+
+\paragraph{Outline.}
+Each output bit of $\langle \Message, \Transparent \rangle$ is, viewed as
+a $\GF{2}$-linear function of the input bits, a parity sum over a
+specific subset of the bit-table. We lift these parity sums from
+$\GF{2}$ to integers ($\mathbb{Z}$), bound each integer by the public
+table $\Transparent$, and reinterpret modulo $p$ to land in $\akF$. The
+verifier then re-checks
+\(
+   \sum_{i,j} \Transparent^{(j)}_i \cdot \BitTable_{i,j}
+   = \text{(opened sum)} \pmod p
+\)
+as an $\akF$-arithmetic statement on the bit-table.
+
+Soundness: dominated by the probability that the opened sums match
+$\langle \Message, \Transparent \rangle$'s parity output bit-by-bit but
+diverge in integer-lifted form, which we'll bound by $\negl(\lambda)$ via
+the bounded-parity argument.
+
+Implementation pointer: \verb|protocol::BatchedParityBridgeProof|,
+\verb|protocol::parity_sum_bounds|.
+
+
+% ============================================================================
+\section{Selected-sum sumcheck}
+\label{sec:selected-sum}
+% ============================================================================
+
+\textsf{[Section to be filled in.]}
+
+\paragraph{Outline.}
+The verifier samples $\alpha \in \akF^*$, defines the
+\emph{selected-bit mask}
+$\Lambda_\alpha : \akF^{\ell + 7} \to \akF$ as an MLE of a specific
+public table built from $\Transparent$ and $\alpha$, and the prover runs
+a degree-2 sumcheck on
+\(
+   \sum_{\mathbf{x} \in \bits^{\ell+7}} \MLE{\BitTable}(\mathbf{x}) \cdot
+   \Lambda_\alpha(\mathbf{x}) \,=\, \Sigma_\alpha,
+\)
+where $\Sigma_\alpha$ is the public $\alpha$-RLC of the opened parity
+sums. Output: a random point $\selectedPoint \in \akF^{\ell + 7}$ and an
+evaluation claim $\MLE{\BitTable}(\selectedPoint) = \evalSelected$
+(communicated by the prover and checked against the sumcheck's closing
+claim).
+
+Soundness: $\le (\ell + 7) \cdot 2 / |\akF^*|$ from the sumcheck rounds,
+plus $1/|\akF^*|$ from sampling $\alpha$.
+
+Implementation pointer: \verb|protocol::prove_product_sumcheck_transcript|,
+\verb|protocol::verify_product_sumcheck_transcript|.
+
+
+% ============================================================================
+\section{Weighted booleanity sumcheck}
+\label{sec:booleanity}
+% ============================================================================
+
+\textsf{[Section to be filled in.]}
+
+\paragraph{Outline.}
+Selected-sum alone does not pin $\MLE{\BitTable}$ to Boolean values
+(a soundness gap: a cheating prover could substitute a non-Boolean
+function that happens to inner-product to the right number with
+$\Lambda_\alpha$). We close the gap with a degree-3 sumcheck
+\[
+   \sum_{\mathbf{x} \in \bits^{\ell+7}} w(\mathbf{x}) \cdot
+   \MLE{\BitTable}(\mathbf{x}) \cdot
+   \bigl(\MLE{\BitTable}(\mathbf{x}) - 1\bigr) \;=\; 0,
+\]
+where $w(\mathbf{x}) = \eq(\mathbf{r}_w, \mathbf{x})$ is the equality
+weight at a fresh challenge $\mathbf{r}_w \in \akF^{\ell + 7}$.
+Booleanity at every point would force the inner factor to vanish
+pointwise; the weighted sum at a random $\mathbf{r}_w$ is sufficient
+because $w$ is generic.
+
+Output: another random point $\boolPoint \in \akF^{\ell + 7}$ and
+evaluation claim $\MLE{\BitTable}(\boolPoint) = \evalBool$.
+
+Soundness: $\le (\ell + 7) \cdot 3 / |\akF^*|$ from the sumcheck rounds.
+
+Implementation pointer:
+\verb|protocol::prove_weighted_booleanity_sumcheck_transcript|.
+
+
+% ============================================================================
+\section{Closing the bridge: PCS opening}
+\label{sec:closing}
+% ============================================================================
+
+\textsf{[Section to be filled in.]}
+
+\paragraph{Outline.}
+After Sections~\ref{sec:selected-sum} and \ref{sec:booleanity}, the
+verifier holds two unverified evaluation claims:
+\(
+   \MLE{\BitTable}(\selectedPoint) = \evalSelected
+\)
+and
+\(
+   \MLE{\BitTable}(\boolPoint) = \evalBool.
+\)
+Both claims must be \emph{discharged} via the PCS opening of the
+committed polynomial. Two strategies follow in
+Section~\ref{sec:variant-succinct} (two-point batched opening) and
+Section~\ref{sec:variant-claim-reduced} (single-point opening after a
+claim-reduction sumcheck).
+
+
+% ============================================================================
+\section{Variant A — Succinct (multi-point) opening}
+\label{sec:variant-succinct}
+% ============================================================================
+
+\textsf{[Section to be filled in.]}
+
+\paragraph{Outline.}
+We open the committed polynomial at both $(\selectedPoint \| 1)$ and
+$(\boolPoint \| 1)$ simultaneously via Akita's multi-point
+\verb|batched_prove| / \verb|batched_verify| API. The trailing $1$
+recovers the bit-table MLE from the OneHotPoly encoding
+(Section~\ref{sec:commitment}).
+
+Implementation pointer: \verb|akita-bridge/src/succinct.rs|.
+
+
+% ============================================================================
+\section{Variant B — Claim-reduced (single-point) opening}
+\label{sec:variant-claim-reduced}
+% ============================================================================
+
+\textsf{[Section to be filled in.]}
+
+\paragraph{Outline.}
+Sample $\beta \in \akF^*$, run a degree-2 sumcheck on
+\[
+   \sum_{\mathbf{x}} \MLE{\BitTable}(\mathbf{x}) \cdot
+   \bigl(\eq(\selectedPoint, \mathbf{x}) + \beta \cdot
+        \eq(\boolPoint, \mathbf{x})\bigr)
+   \;=\; \evalSelected + \beta \cdot \evalBool.
+\]
+The sumcheck output is a single new evaluation claim
+$\MLE{\BitTable}(\reducedPoint) = \evalSelected'$ (computed from the
+final-claim equation), which we discharge with a single-point Akita
+opening at $(\reducedPoint \| 1)$.
+
+Trade-off: one extra degree-2 sumcheck (cheap) in exchange for a
+single-point PCS opening (smaller and faster than the two-point
+variant).
+
+Implementation pointer: \verb|akita-bridge/src/claim_reduced.rs|.
+
+
+% ============================================================================
+\section{Commitment representation}
+\label{sec:commitment}
+% ============================================================================
+
+\textsf{[Section to be filled in.]}
+
+\paragraph{Outline.}
+We commit to the bit-table as a \emph{2-way OneHotPoly}:
+$\mathsf{OneHotPoly}\langle \akF, D=64, K=2 \rangle$. Each Boolean
+$b \in \bits$ is encoded as the pair $[1 - b, b]$ (exactly one $1$ in
+each pair), padding the bit-table from $N$ to $2N$ field elements and
+adding one variable. The resulting polynomial has $n = \ell + 8$
+variables. To recover $\MLE{\BitTable}$ at a point $\mathbf{x} \in
+\akF^{\ell + 7}$, one opens the OneHotPoly at $(\mathbf{x}\,\|\,1)$:
+the trailing $1$ selects the second element of each $[1-b, b]$ pair.
+
+Discussion of why $K=2$ (vs $K=64$, vs DensePoly): in
+\verb|docs/akita-k2-onehot-bug-report.md| and Section~\ref{sec:closing}
+above.
+
+Implementation pointer: \verb|protocol::BitSliceOracle::to_onehot_bit_table_poly|.
+
+
+% ============================================================================
+\section{End-to-end soundness}
+\label{sec:soundness}
+% ============================================================================
+
+\textsf{[Section to be filled in.]}
+
+The protocol's soundness error is a sum of per-component contributions:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Component & Source of error & Bound \\
+\midrule
+Bit-slicing                 & --- (perfect)                            & $0$ \\
+Parity bridge               & Integer-lift collision                   & TBD \\
+Selected-sum sumcheck       & Schwartz–Zippel ($\alpha$ + $\ell + 7$ rounds) & $\le (\ell + 8) \cdot 2 / |\akF^*|$ \\
+Booleanity sumcheck         & Schwartz–Zippel ($\mathbf{r}_w$ + $\ell + 7$ rounds) & $\le (\ell + 8) \cdot 3 / |\akF^*|$ \\
+Claim-reduction sumcheck (B)& Schwartz–Zippel ($\beta$ + $\ell + 7$ rounds) & $\le (\ell + 8) \cdot 2 / |\akF^*|$ \\
+PCS opening (Akita)         & Lattice SIS hardness                     & $\negl(\lambda)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Dominant contribution: TBD.
+
+
+% ============================================================================
+\appendix
+
+\section{Round-by-round protocol scripts}
+\label{app:scripts}
+% ============================================================================
+
+\textsf{[Appendix to be filled in.]}
+
+Will contain side-by-side prover/verifier scripts for both variants,
+formatted as algorithm2e environments.
+
+
+% ============================================================================
+\section{Implementation correspondence}
+\label{app:impl}
+% ============================================================================
+
+A short mapping from sections to source files and key types in the
+implementation.
+
+\begin{table}[h]
+\small
+\begin{tabular}{lll}
+\toprule
+Section & Crate :: module                                & Notable items \\
+\midrule
+\ref{sec:bit-slicing}        & \verb|akita-bridge::protocol|     & \verb|BitSliceOracle|, \verb|to_bit_table_evals| \\
+\ref{sec:parity-bridge}      & \verb|akita-bridge::protocol|     & \verb|BatchedParityBridgeProof|, \verb|parity_sum_bounds| \\
+\ref{sec:selected-sum}       & \verb|akita-bridge::protocol|     & \verb|prove_product_sumcheck_transcript| \\
+\ref{sec:booleanity}         & \verb|akita-bridge::protocol|     & \verb|prove_weighted_booleanity_sumcheck_transcript| \\
+\ref{sec:closing}            & --- (verifier-side check)         & --- \\
+\ref{sec:variant-succinct}   & \verb|akita-bridge::succinct|     & \verb|AkitaSuccinctVerifierChannel| \\
+                             & \verb|akita-bridge-prover::succinct|  & \verb|AkitaSuccinctProverChannel| \\
+\ref{sec:variant-claim-reduced} & \verb|akita-bridge::claim_reduced| & \verb|AkitaClaimReducedVerifierChannel| \\
+                             & \verb|akita-bridge-prover::claim_reduced| & \verb|AkitaClaimReducedProverChannel| \\
+\ref{sec:commitment}         & \verb|akita-bridge::protocol|     & \verb|BitSliceOracle::to_onehot_bit_table_poly| \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\end{document}

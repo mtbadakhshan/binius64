@@ -93,6 +93,14 @@ harness = false
 name = "fracaddcheck"
 harness = false
 
+# Wall-clock comparison of the four Binius64 proof paths (BaseFold, Akita
+# full-open, Akita succinct, Akita claim-reduced). Lives next to the matrix
+# test in `tests/prove_verify_all_modes.rs` and reuses the same circuits.
+[[bench]]
+name = "akita_modes"
+harness = false
+required-features = ["akita"]
+
 [features]
 default = ["rayon"]
 # `akita` enables the Akita lattice-PCS bridge in the prover API

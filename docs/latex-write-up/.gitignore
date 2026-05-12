@@ -1,0 +1,17 @@
+# latexmk + pdflatex build artifacts — keep only the .tex sources in git.
+build/
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.bbl
+*.blg
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+*.pdf
