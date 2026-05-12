@@ -253,18 +253,27 @@ runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
     cross-validated against the C reference, including a
     "one-set-at-each-lane-boundary" stress for the next-lane
     overflow contribution.
-  - [ ] `K = 4` polynomial wrapper that fans `decompose` + `use_hint`
-    out across the full `wApprox` vector (1024 calls each), plus the
-    full `w1Encode` of all `K` polynomials. The
-    [R6 → R7 pipeline integration test](../crates/mldsa/tests/r6_r7_pipeline.rs)
-    already exercises this composition for `K = 1` end-to-end through
-    SHAKE256, so the `K = 4` wrapper is structurally trivial.
-- [ ] R7: `c̃' = SHAKE256(μ ‖ w₁')` + binding equality `c̃' == c̃`.
-  SHAKE streaming prerequisite is now in (the `r7_worst_case_input`
-  test in [`crates/mldsa/tests/shake.rs`](../crates/mldsa/tests/shake.rs)
-  exercises the exact 832-byte multi-block absorb + 32-byte squeeze
-  shape R7 will use); pending pieces are `w1Encode` (small bit-packing,
-  inverse of `polyz_pack`-style) and the framing wrapper.
+  - [x] `K = 4` polynomial wrapper (`use_hint_polyvec`,
+    `pack_w1_polyvec`) — landed inside the R7 module, see below.
+- [x] R7: `c̃' = SHAKE256(μ ‖ w₁')` + binding equality `c̃' == c̃` —
+  full Mode 2 K = 4 implementation in
+  [`crates/mldsa/src/r7.rs`](../crates/mldsa/src/r7.rs):
+  `assert_r7(b, w_approx, hint, mu_lanes, c_tilde_lanes)` composes
+  `use_hint_polyvec` + `pack_w1_polyvec` + `shake256(_, 832 B, 32 B)`
+  + per-lane `assert_eq` against `c̃`. The 12-test soundness battery in
+  [`crates/mldsa/tests/r7.rs`](../crates/mldsa/tests/r7.rs) covers:
+  - **Acceptance**: honest random K=4 (multiple seeds), zero inputs,
+    decompose-boundary inputs.
+  - **Tamper rejection** for each of the four R7 inputs (`c̃`,
+    `wApprox`, `hint`, `μ`), at both polyvec position `[0][0]` and
+    deep interior positions (`[K−1][N−1]`, `[K/2][N/2]`).
+  - **Hint-mechanism correctness**:
+    `r7_accepts_w_approx_perturbed_within_hint_slack` documents that
+    R7 *deliberately* accepts wApprox perturbations that don't change
+    `use_hint(_, h)` — this is the whole point of ML-DSA hints, and a
+    future bug that makes R7 over-strict would break this test.
+  - **Range cascade**: `r7_rejects_hint_geq_2` confirms `use_hint`'s
+    `hint < 2` range check actually triggers when wired in via R7.
 - [ ] Wire up KAT verification: pull KATs from
   `dilithium/ref/nistkat`, run them through the `binius-prover` /
   `binius-verifier` end-to-end, flip on

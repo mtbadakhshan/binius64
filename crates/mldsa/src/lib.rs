@@ -49,6 +49,7 @@ pub mod aggregate;
 pub mod params;
 pub mod polyw1;
 pub mod polyz;
+pub mod r7;
 pub mod rounding;
 pub mod shake;
 pub mod sigdecode;
