@@ -1,30 +1,33 @@
 // Copyright 2026 The Binius Developers
 
-//! Experimental bridge boundary for a Hachi-backed PCS.
+//! Experimental bridge boundary for a Akita-backed PCS.
 //!
 //! Binius64's IOP oracle relations are stated over the binary tower field
-//! [`BinaryField128bGhash`]. The local Hachi implementation works over its
+//! [`BinaryField128bGhash`]. The local Akita implementation works over its
 //! `fp128` prime field preset. This module deliberately exposes only the
 //! canonical integer lift and the reason it is not yet a sound PCS replacement.
 
 use binius_field::{BinaryField128bGhash, Field};
 use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::Challenger};
-use hachi_pcs::protocol::commitment::presets::fp128;
-use hachi_pcs::protocol::hachi_poly_ops::{DensePoly, OneHotPoly};
-use hachi_pcs::{CanonicalField, FieldCore, FromSmallInt};
 
-use crate::{channel::Error, hachi_wire};
+use akita_config::proof_optimized::fp128;
+use akita_field::{AkitaError, CanonicalField};
+use akita_prover::{DensePoly, OneHotPoly};
+
+use binius_iop::channel::Error;
+
+use crate::wire;
 
 /// Binius64's current scalar field for IOP oracle relations.
 pub type BiniusScalar = BinaryField128bGhash;
 
-/// Hachi's default 128-bit prime field preset.
-pub type HachiScalar = fp128::Field;
+/// Akita's default 128-bit prime field preset.
+pub type AkitaFieldScalar = fp128::Field;
 
 /// Number of Boolean coordinates in one Binius scalar.
 pub const BINIUS_SCALAR_BITS: usize = 128;
 
-/// Verifier-owned structured transparent relation for the Hachi succinct bridge.
+/// Verifier-owned structured transparent relation for the Akita succinct bridge.
 ///
 /// Implementations must derive every value from public verifier state. The prover must not choose
 /// the results of these methods, because they replace full transparent-table scans in the bridge
@@ -40,12 +43,12 @@ pub trait StructuredTransparentRelation {
 	/// Public upper bounds for each selected-bit parity sum.
 	fn parity_sum_bounds(&self) -> Result<[u64; BINIUS_SCALAR_BITS], BatchedParityBridgeError>;
 
-	/// Evaluates the Hachi-field multilinear extension of the batched selected-bit mask.
+	/// Evaluates the Akita-field multilinear extension of the batched selected-bit mask.
 	fn eval_selected_mask(
 		&self,
-		alpha: HachiScalar,
-		point: &[HachiScalar],
-	) -> Result<HachiScalar, BatchedParityBridgeError>;
+		alpha: AkitaFieldScalar,
+		point: &[AkitaFieldScalar],
+	) -> Result<AkitaFieldScalar, BatchedParityBridgeError>;
 }
 
 /// Structured relation for a constant transparent table.
@@ -95,9 +98,9 @@ impl StructuredTransparentRelation for ConstantTransparentRelation {
 
 	fn eval_selected_mask(
 		&self,
-		alpha: HachiScalar,
-		point: &[HachiScalar],
-	) -> Result<HachiScalar, BatchedParityBridgeError> {
+		alpha: AkitaFieldScalar,
+		point: &[AkitaFieldScalar],
+	) -> Result<AkitaFieldScalar, BatchedParityBridgeError> {
 		let expected_point_len = self
 			.log_len
 			.checked_add(7)
@@ -108,7 +111,7 @@ impl StructuredTransparentRelation for ConstantTransparentRelation {
 
 		let alpha_powers = powers(alpha, BINIUS_SCALAR_BITS);
 		let bit_eq_evals = multilinear_eq_evals(&point[..7]);
-		let mut eval = HachiScalar::from_u64(0);
+		let mut eval = AkitaFieldScalar::from_u64(0);
 		for (input_bit, &bit_eq) in bit_eq_evals.iter().enumerate() {
 			eval += bit_eq * selected_sum_mask_value(self.coefficient, input_bit, &alpha_powers);
 		}
@@ -119,17 +122,17 @@ impl StructuredTransparentRelation for ConstantTransparentRelation {
 /// Evaluations of the 128 bit-slice multilinears for one Binius oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitSliceOracle {
-	/// `bit_polys[j][i]` is bit `j` of oracle element `i`, embedded in Hachi's field.
-	pub bit_polys: Vec<Vec<HachiScalar>>,
+	/// `bit_polys[j][i]` is bit `j` of oracle element `i`, embedded in Akita's field.
+	pub bit_polys: Vec<Vec<AkitaFieldScalar>>,
 }
 
 impl BitSliceOracle {
 	/// Build bit-slice polynomial evaluation tables from Binius oracle values.
 	pub fn from_binius_oracle(oracle: &[BiniusScalar]) -> Self {
-		let mut bit_polys = vec![vec![HachiScalar::from_u64(0); oracle.len()]; BINIUS_SCALAR_BITS];
+		let mut bit_polys = vec![vec![AkitaFieldScalar::from_u64(0); oracle.len()]; BINIUS_SCALAR_BITS];
 		for (i, &value) in oracle.iter().enumerate() {
 			for (bit, poly) in bit_polys.iter_mut().enumerate() {
-				poly[i] = HachiScalar::from_u64(bit_at(value, bit));
+				poly[i] = AkitaFieldScalar::from_u64(bit_at(value, bit));
 			}
 		}
 		Self { bit_polys }
@@ -145,19 +148,19 @@ impl BitSliceOracle {
 		self.len() == 0
 	}
 
-	/// Convert bit-slice evaluation tables into Hachi dense polynomials.
+	/// Convert bit-slice evaluation tables into Akita dense polynomials.
 	pub fn to_dense_polys<const D: usize>(
 		&self,
-	) -> Result<Vec<DensePoly<HachiScalar, D>>, hachi_pcs::HachiError> {
+	) -> Result<Vec<DensePoly<AkitaFieldScalar, D>>, AkitaError> {
 		let num_vars = self.len().trailing_zeros() as usize;
 		self.bit_polys
 			.iter()
-			.map(|evals| DensePoly::<HachiScalar, D>::from_field_evals(num_vars, evals))
+			.map(|evals| DensePoly::<AkitaFieldScalar, D>::from_field_evals(num_vars, evals))
 			.collect()
 	}
 
 	/// Flatten to one bit-table MLE with index `(oracle_index, bit_index)`.
-	pub fn to_bit_table_evals(&self) -> Vec<HachiScalar> {
+	pub fn to_bit_table_evals(&self) -> Vec<AkitaFieldScalar> {
 		let len = self.len();
 		let mut evals = Vec::with_capacity(len * BINIUS_SCALAR_BITS);
 		for i in 0..len {
@@ -168,37 +171,37 @@ impl BitSliceOracle {
 		evals
 	}
 
-	/// Convert the flattened bit table into one Hachi dense polynomial.
+	/// Convert the flattened bit table into one Akita dense polynomial.
 	pub fn to_bit_table_dense_poly<const D: usize>(
 		&self,
-	) -> Result<DensePoly<HachiScalar, D>, hachi_pcs::HachiError> {
+	) -> Result<DensePoly<AkitaFieldScalar, D>, AkitaError> {
 		let num_vars = self.len().trailing_zeros() as usize + 7;
-		DensePoly::<HachiScalar, D>::from_field_evals(num_vars, &self.to_bit_table_evals())
+		DensePoly::<AkitaFieldScalar, D>::from_field_evals(num_vars, &self.to_bit_table_evals())
 	}
 
-	/// Convert bit table to a 1-of-2 Hachi one-hot polynomial.
+	/// Convert bit table to a 1-of-2 Akita one-hot polynomial.
 	///
 	/// The extra least-significant variable selects `(1 - bit, bit)`, so opening
 	/// this polynomial at `point || 1` recovers the bit-table MLE at `point`.
 	pub fn to_onehot_bit_table_poly<const D: usize>(
 		&self,
-	) -> Result<OneHotPoly<HachiScalar, D, u8>, hachi_pcs::HachiError> {
+	) -> Result<OneHotPoly<AkitaFieldScalar, D, u8>, AkitaError> {
 		let indices = self
 			.to_bit_table_evals()
 			.into_iter()
 			.map(|bit| {
-				if bit == HachiScalar::from_u64(0) {
+				if bit == AkitaFieldScalar::from_u64(0) {
 					Some(0u8)
 				} else {
 					Some(1u8)
 				}
 			})
 			.collect();
-		OneHotPoly::<HachiScalar, D, u8>::new(2, indices)
+		OneHotPoly::<AkitaFieldScalar, D, u8>::new(2, indices)
 	}
 }
 
-/// Degree-2 product-sumcheck proof over Hachi's field.
+/// Degree-2 product-sumcheck proof over Akita's field.
 ///
 /// This proves claims of the form `sum_x sum_j A_j(x) * B_j(x) = claim`.
 /// The final equality must be discharged by opening all multilinears at the
@@ -206,16 +209,16 @@ impl BitSliceOracle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductSumcheckProof {
 	/// Each round stores `q(0), q(1), q(2)` for the quadratic round polynomial.
-	pub round_evals: Vec<[HachiScalar; 3]>,
+	pub round_evals: Vec<[AkitaFieldScalar; 3]>,
 }
 
 impl ProductSumcheckProof {
 	/// Verify sumcheck round consistency and return the final claim.
 	pub fn verify_rounds(
 		&self,
-		initial_claim: HachiScalar,
-		challenges: &[HachiScalar],
-	) -> Result<HachiScalar, BatchedParityBridgeError> {
+		initial_claim: AkitaFieldScalar,
+		challenges: &[AkitaFieldScalar],
+	) -> Result<AkitaFieldScalar, BatchedParityBridgeError> {
 		if self.round_evals.len() != challenges.len() {
 			return Err(BatchedParityBridgeError::InvalidSumcheck);
 		}
@@ -239,16 +242,16 @@ impl ProductSumcheckProof {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeightedBooleanitySumcheckProof {
 	/// Each round stores `q(0), q(1), q(2), q(3)` for the cubic round polynomial.
-	pub round_evals: Vec<[HachiScalar; 4]>,
+	pub round_evals: Vec<[AkitaFieldScalar; 4]>,
 }
 
 impl WeightedBooleanitySumcheckProof {
 	/// Verify sumcheck round consistency and return the final claim.
 	pub fn verify_rounds(
 		&self,
-		initial_claim: HachiScalar,
-		challenges: &[HachiScalar],
-	) -> Result<HachiScalar, BatchedParityBridgeError> {
+		initial_claim: AkitaFieldScalar,
+		challenges: &[AkitaFieldScalar],
+	) -> Result<AkitaFieldScalar, BatchedParityBridgeError> {
 		if self.round_evals.len() != challenges.len() {
 			return Err(BatchedParityBridgeError::InvalidSumcheck);
 		}
@@ -266,11 +269,11 @@ impl WeightedBooleanitySumcheckProof {
 
 /// Prove a product-sumcheck for multilinears with equal power-of-two lengths.
 pub fn prove_product_sumcheck(
-	lefts: &[Vec<HachiScalar>],
-	rights: &[Vec<HachiScalar>],
-	challenges: &[HachiScalar],
+	lefts: &[Vec<AkitaFieldScalar>],
+	rights: &[Vec<AkitaFieldScalar>],
+	challenges: &[AkitaFieldScalar],
 ) -> Result<
-	(HachiScalar, ProductSumcheckProof, Vec<HachiScalar>, Vec<HachiScalar>),
+	(AkitaFieldScalar, ProductSumcheckProof, Vec<AkitaFieldScalar>, Vec<AkitaFieldScalar>),
 	BatchedParityBridgeError,
 > {
 	validate_product_inputs(lefts, rights)?;
@@ -303,8 +306,8 @@ pub fn prove_product_sumcheck(
 }
 
 fn validate_product_inputs(
-	lefts: &[Vec<HachiScalar>],
-	rights: &[Vec<HachiScalar>],
+	lefts: &[Vec<AkitaFieldScalar>],
+	rights: &[Vec<AkitaFieldScalar>],
 ) -> Result<(), BatchedParityBridgeError> {
 	if lefts.len() != rights.len() || lefts.is_empty() {
 		return Err(BatchedParityBridgeError::InvalidSumcheck);
@@ -322,15 +325,15 @@ fn validate_product_inputs(
 /// Construct the selected-bit masks batched by `alpha`.
 pub fn batched_selected_sum_masks(
 	transparent: &[BiniusScalar],
-	alpha: HachiScalar,
-) -> Vec<Vec<HachiScalar>> {
+	alpha: AkitaFieldScalar,
+) -> Vec<Vec<AkitaFieldScalar>> {
 	let alpha_powers = powers(alpha, BINIUS_SCALAR_BITS);
-	let mut masks = vec![vec![HachiScalar::from_u64(0); transparent.len()]; BINIUS_SCALAR_BITS];
+	let mut masks = vec![vec![AkitaFieldScalar::from_u64(0); transparent.len()]; BINIUS_SCALAR_BITS];
 	for (i, &coefficient) in transparent.iter().enumerate() {
 		for (input_bit, mask_poly) in masks.iter_mut().enumerate() {
 			let basis = BiniusScalar::new(1u128 << input_bit);
 			let product = coefficient * basis;
-			let mut mask_value = HachiScalar::from_u64(0);
+			let mut mask_value = AkitaFieldScalar::from_u64(0);
 			for output_bit in 0..BINIUS_SCALAR_BITS {
 				if bit_at(product, output_bit) == 1 {
 					mask_value += alpha_powers[output_bit];
@@ -345,8 +348,8 @@ pub fn batched_selected_sum_masks(
 /// Construct one selected-bit mask over the flattened `(oracle_index, bit_index)` table.
 pub fn batched_selected_sum_table_mask(
 	transparent: &[BiniusScalar],
-	alpha: HachiScalar,
-) -> Vec<HachiScalar> {
+	alpha: AkitaFieldScalar,
+) -> Vec<AkitaFieldScalar> {
 	let alpha_powers = powers(alpha, BINIUS_SCALAR_BITS);
 	let mut mask = Vec::with_capacity(transparent.len() * BINIUS_SCALAR_BITS);
 	for &coefficient in transparent {
@@ -360,9 +363,9 @@ pub fn batched_selected_sum_table_mask(
 /// Evaluate the flattened selected-bit mask without materializing its full table.
 pub fn evaluate_batched_selected_sum_table_mask(
 	transparent: &[BiniusScalar],
-	alpha: HachiScalar,
-	point: &[HachiScalar],
-) -> Result<HachiScalar, BatchedParityBridgeError> {
+	alpha: AkitaFieldScalar,
+	point: &[AkitaFieldScalar],
+) -> Result<AkitaFieldScalar, BatchedParityBridgeError> {
 	if point.len() < 7 {
 		return Err(BatchedParityBridgeError::InvalidSumcheck);
 	}
@@ -378,9 +381,9 @@ pub fn evaluate_batched_selected_sum_table_mask(
 	let alpha_powers = powers(alpha, BINIUS_SCALAR_BITS);
 	let bit_eq_evals = multilinear_eq_evals(&point[..7]);
 	let transparent_eq_evals = multilinear_eq_evals(&point[7..]);
-	let mut eval = HachiScalar::from_u64(0);
+	let mut eval = AkitaFieldScalar::from_u64(0);
 	for (&coefficient, &transparent_eq) in transparent.iter().zip(&transparent_eq_evals) {
-		let mut coefficient_eval = HachiScalar::from_u64(0);
+		let mut coefficient_eval = AkitaFieldScalar::from_u64(0);
 		for (input_bit, &bit_eq) in bit_eq_evals.iter().enumerate() {
 			coefficient_eval +=
 				bit_eq * selected_sum_mask_value(coefficient, input_bit, &alpha_powers);
@@ -391,11 +394,11 @@ pub fn evaluate_batched_selected_sum_table_mask(
 }
 
 /// Compute `sum_k alpha^k values[k]`.
-pub fn batched_u64_sum(values: &[u64; BINIUS_SCALAR_BITS], alpha: HachiScalar) -> HachiScalar {
-	let mut alpha_power = HachiScalar::from_u64(1);
-	let mut sum = HachiScalar::from_u64(0);
+pub fn batched_u64_sum(values: &[u64; BINIUS_SCALAR_BITS], alpha: AkitaFieldScalar) -> AkitaFieldScalar {
+	let mut alpha_power = AkitaFieldScalar::from_u64(1);
+	let mut sum = AkitaFieldScalar::from_u64(0);
 	for &value in values {
-		sum += alpha_power * HachiScalar::from_u64(value);
+		sum += alpha_power * AkitaFieldScalar::from_u64(value);
 		alpha_power *= alpha;
 	}
 	sum
@@ -404,14 +407,14 @@ pub fn batched_u64_sum(values: &[u64; BINIUS_SCALAR_BITS], alpha: HachiScalar) -
 /// Build the Booleanity product-sumcheck input for bit-slice polynomials.
 pub fn booleanity_sumcheck_inputs(
 	bit_slices: &BitSliceOracle,
-) -> (Vec<Vec<HachiScalar>>, Vec<Vec<HachiScalar>>) {
+) -> (Vec<Vec<AkitaFieldScalar>>, Vec<Vec<AkitaFieldScalar>>) {
 	let lefts = bit_slices.bit_polys.clone();
 	let rights = bit_slices
 		.bit_polys
 		.iter()
 		.map(|poly| {
 			poly.iter()
-				.map(|&bit| bit - HachiScalar::from_u64(1))
+				.map(|&bit| bit - AkitaFieldScalar::from_u64(1))
 				.collect()
 		})
 		.collect();
@@ -420,14 +423,14 @@ pub fn booleanity_sumcheck_inputs(
 
 /// Build Booleanity product inputs for one flattened bit-table polynomial.
 pub fn booleanity_table_sumcheck_inputs(
-	bit_table: &[HachiScalar],
-) -> (Vec<Vec<HachiScalar>>, Vec<Vec<HachiScalar>>) {
+	bit_table: &[AkitaFieldScalar],
+) -> (Vec<Vec<AkitaFieldScalar>>, Vec<Vec<AkitaFieldScalar>>) {
 	(
 		vec![bit_table.to_vec()],
 		vec![
 			bit_table
 				.iter()
-				.map(|&bit| bit - HachiScalar::from_u64(1))
+				.map(|&bit| bit - AkitaFieldScalar::from_u64(1))
 				.collect(),
 		],
 	)
@@ -435,10 +438,10 @@ pub fn booleanity_table_sumcheck_inputs(
 
 /// Prove randomly weighted Booleanity for one bit-table polynomial.
 pub fn prove_weighted_booleanity_sumcheck(
-	bit_table: &[HachiScalar],
-	weight_point: &[HachiScalar],
-	challenges: &[HachiScalar],
-) -> Result<(HachiScalar, WeightedBooleanitySumcheckProof, HachiScalar), BatchedParityBridgeError> {
+	bit_table: &[AkitaFieldScalar],
+	weight_point: &[AkitaFieldScalar],
+	challenges: &[AkitaFieldScalar],
+) -> Result<(AkitaFieldScalar, WeightedBooleanitySumcheckProof, AkitaFieldScalar), BatchedParityBridgeError> {
 	validate_weighted_booleanity_inputs(bit_table, weight_point)?;
 	if challenges.len() != weight_point.len() {
 		return Err(BatchedParityBridgeError::InvalidSumcheck);
@@ -461,11 +464,11 @@ pub fn prove_weighted_booleanity_sumcheck(
 
 /// Prove a product sumcheck with Fiat-Shamir challenges from the Binius transcript.
 pub fn prove_product_sumcheck_transcript<Challenger_>(
-	lefts: &[Vec<HachiScalar>],
-	rights: &[Vec<HachiScalar>],
+	lefts: &[Vec<AkitaFieldScalar>],
+	rights: &[Vec<AkitaFieldScalar>],
 	transcript: &mut ProverTranscript<Challenger_>,
 ) -> Result<
-	(HachiScalar, ProductSumcheckProof, Vec<HachiScalar>, Vec<HachiScalar>, Vec<HachiScalar>),
+	(AkitaFieldScalar, ProductSumcheckProof, Vec<AkitaFieldScalar>, Vec<AkitaFieldScalar>, Vec<AkitaFieldScalar>),
 	BatchedParityBridgeError,
 >
 where
@@ -475,7 +478,7 @@ where
 	let mut lefts = lefts.to_vec();
 	let mut rights = rights.to_vec();
 	let initial_claim = product_sum(&lefts, &rights);
-	hachi_wire::write_hachi(transcript, &initial_claim);
+	wire::write_akita(transcript, &initial_claim);
 
 	let log_len = lefts[0].len().trailing_zeros() as usize;
 	let mut round_evals = Vec::with_capacity(log_len);
@@ -483,9 +486,9 @@ where
 	for _ in 0..log_len {
 		let round = product_round_evals(&lefts, &rights);
 		for value in &round {
-			hachi_wire::write_hachi(transcript, value);
+			wire::write_akita(transcript, value);
 		}
-		let challenge = hachi_wire::sample_hachi_scalar(transcript);
+		let challenge = wire::sample_akita_scalar(transcript);
 		challenges.push(challenge);
 		for poly in &mut lefts {
 			fold_evals(poly, challenge);
@@ -507,14 +510,14 @@ where
 
 /// Verify a product sumcheck from a Binius transcript and return challenges plus final claim.
 pub fn verify_product_sumcheck_transcript<Challenger_>(
-	expected_initial_claim: HachiScalar,
+	expected_initial_claim: AkitaFieldScalar,
 	num_rounds: usize,
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<(ProductSumcheckProof, Vec<HachiScalar>, HachiScalar), Error>
+) -> Result<(ProductSumcheckProof, Vec<AkitaFieldScalar>, AkitaFieldScalar), Error>
 where
 	Challenger_: Challenger,
 {
-	let initial_claim = hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?;
+	let initial_claim = wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?;
 	if initial_claim != expected_initial_claim {
 		return Err(Error::ProofEmpty);
 	}
@@ -524,14 +527,14 @@ where
 	let mut challenges = Vec::with_capacity(num_rounds);
 	for _ in 0..num_rounds {
 		let round = [
-			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
-			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
-			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
+			wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?,
+			wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?,
+			wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?,
 		];
 		if round[0] + round[1] != claim {
 			return Err(Error::ProofEmpty);
 		}
-		let challenge = hachi_wire::verify_sample_hachi_scalar(transcript);
+		let challenge = wire::verify_sample_akita_scalar(transcript);
 		claim = evaluate_quadratic_from_0_1_2(round, challenge);
 		round_evals.push(round);
 		challenges.push(challenge);
@@ -541,11 +544,11 @@ where
 
 /// Prove weighted Booleanity with Fiat-Shamir challenges from the Binius transcript.
 pub fn prove_weighted_booleanity_sumcheck_transcript<Challenger_>(
-	bit_table: &[HachiScalar],
-	weight_point: &[HachiScalar],
+	bit_table: &[AkitaFieldScalar],
+	weight_point: &[AkitaFieldScalar],
 	transcript: &mut ProverTranscript<Challenger_>,
 ) -> Result<
-	(HachiScalar, WeightedBooleanitySumcheckProof, Vec<HachiScalar>, HachiScalar),
+	(AkitaFieldScalar, WeightedBooleanitySumcheckProof, Vec<AkitaFieldScalar>, AkitaFieldScalar),
 	BatchedParityBridgeError,
 >
 where
@@ -555,7 +558,7 @@ where
 	let mut bits = bit_table.to_vec();
 	let mut weights = multilinear_eq_evals(weight_point);
 	let initial_claim = weighted_booleanity_sum(&bits, &weights);
-	hachi_wire::write_hachi(transcript, &initial_claim);
+	wire::write_akita(transcript, &initial_claim);
 
 	let log_len = bit_table.len().trailing_zeros() as usize;
 	let mut round_evals = Vec::with_capacity(log_len);
@@ -563,9 +566,9 @@ where
 	for _ in 0..log_len {
 		let round = weighted_booleanity_round_evals(&bits, &weights);
 		for value in &round {
-			hachi_wire::write_hachi(transcript, value);
+			wire::write_akita(transcript, value);
 		}
-		let challenge = hachi_wire::sample_hachi_scalar(transcript);
+		let challenge = wire::sample_akita_scalar(transcript);
 		challenges.push(challenge);
 		fold_evals(&mut bits, challenge);
 		fold_evals(&mut weights, challenge);
@@ -577,14 +580,14 @@ where
 
 /// Verify weighted Booleanity from a Binius transcript and return challenges plus final claim.
 pub fn verify_weighted_booleanity_sumcheck_transcript<Challenger_>(
-	expected_initial_claim: HachiScalar,
+	expected_initial_claim: AkitaFieldScalar,
 	num_rounds: usize,
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<(WeightedBooleanitySumcheckProof, Vec<HachiScalar>, HachiScalar), Error>
+) -> Result<(WeightedBooleanitySumcheckProof, Vec<AkitaFieldScalar>, AkitaFieldScalar), Error>
 where
 	Challenger_: Challenger,
 {
-	let initial_claim = hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?;
+	let initial_claim = wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?;
 	if initial_claim != expected_initial_claim {
 		return Err(Error::ProofEmpty);
 	}
@@ -594,15 +597,15 @@ where
 	let mut challenges = Vec::with_capacity(num_rounds);
 	for _ in 0..num_rounds {
 		let round = [
-			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
-			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
-			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
-			hachi_wire::read_hachi::<HachiScalar, _>(transcript, &())?,
+			wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?,
+			wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?,
+			wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?,
+			wire::read_akita::<AkitaFieldScalar, _>(transcript, &())?,
 		];
 		if round[0] + round[1] != claim {
 			return Err(Error::ProofEmpty);
 		}
-		let challenge = hachi_wire::verify_sample_hachi_scalar(transcript);
+		let challenge = wire::verify_sample_akita_scalar(transcript);
 		claim = evaluate_cubic_from_0_1_2_3(round, challenge);
 		round_evals.push(round);
 		challenges.push(challenge);
@@ -610,22 +613,182 @@ where
 	Ok((WeightedBooleanitySumcheckProof { round_evals }, challenges, claim))
 }
 
-/// Canonical `u128` lift from the Binius binary field to Hachi's prime field.
+// ============================================================================
+// Claim reduction sumcheck (used by the `akita-claim-reduced` bridge variant)
+// ============================================================================
+//
+// Reduces two opening claims on the same committed polynomial `B`:
+//
+//     B(selected_point) = e_selected
+//     B(bool_point)     = e_bool
+//
+// into a single claim `B(r_final) = e_final` for a freshly sampled point
+// `r_final`, so the PCS only needs to open `B` at one point.
+//
+// Construction: sample a verifier random `alpha`, define
+//
+//     T(x) = eq(selected_point, x) + alpha * eq(bool_point, x)
+//
+// and run the standard degree-2 product sumcheck on the identity
+//
+//     sum_{x ∈ {0,1}^n} B(x) * T(x) = e_selected + alpha * e_bool
+//
+// The sumcheck reduces this to a final claim `B(r_final) * T(r_final) = c`
+// at the sumcheck challenges `r_final`. The verifier computes `T(r_final)`
+// independently from the two public opening points and `alpha`, so the
+// residual claim collapses to `B(r_final) = c / T(r_final)` — a single-point
+// opening that the PCS discharges.
+//
+// Soundness (Schwartz-Zippel + sumcheck soundness):
+//   - Probability the verifier accepts a wrong reduction: ≤ 1/|F| from the
+//     `alpha` linear combination, plus ≤ 3·log(N)/|F| from the n-round
+//     degree-2 sumcheck. For |F| = fp128 ≈ 2^128 this is ~negligible.
+
+/// Prove the claim-reduction sumcheck with Fiat-Shamir challenges from the
+/// Binius transcript.
 ///
-/// This is useful for diagnostics and for constructing Hachi test polynomials,
+/// Reuses [`prove_product_sumcheck_transcript`] internally — the claim
+/// reduction is exactly a degree-2 product sumcheck on
+/// `B(x) * (eq(r0, x) + alpha · eq(r1, x))`.
+///
+/// # Returns
+///
+/// `(alpha, sumcheck_proof, challenges, b_final)` where:
+/// - `alpha` is the linear-combination scalar sampled from the transcript.
+/// - `sumcheck_proof` is the underlying product sumcheck proof.
+/// - `challenges` is the new opening point `r_final ∈ F^n`.
+/// - `b_final` is the prover's claim for `B(r_final)`.
+pub fn prove_claim_reduction_sumcheck_transcript<Challenger_>(
+	bit_table: &[AkitaFieldScalar],
+	selected_point: &[AkitaFieldScalar],
+	bool_point: &[AkitaFieldScalar],
+	e_selected: AkitaFieldScalar,
+	e_bool: AkitaFieldScalar,
+	transcript: &mut ProverTranscript<Challenger_>,
+) -> Result<(AkitaFieldScalar, ProductSumcheckProof, Vec<AkitaFieldScalar>, AkitaFieldScalar), BatchedParityBridgeError>
+where
+	Challenger_: Challenger,
+{
+	if selected_point.len() != bool_point.len() {
+		return Err(BatchedParityBridgeError::InvalidSumcheck);
+	}
+	let log_len = bit_table.len().trailing_zeros() as usize;
+	if !bit_table.len().is_power_of_two() || selected_point.len() != log_len {
+		return Err(BatchedParityBridgeError::InvalidSumcheck);
+	}
+
+	// 1. Sample alpha after both opening claims are fixed in the transcript.
+	//    Per the bridge's outer protocol, e_selected and e_bool have already
+	//    been observed by the transcript as part of the preceding sumchecks'
+	//    final claims, so `alpha` is bound to them via Fiat-Shamir.
+	let alpha = wire::sample_akita_scalar(transcript);
+
+	// 2. Build the combined transparent T(x) = eq(r0, x) + alpha · eq(r1, x).
+	let eq_selected = multilinear_eq_evals(selected_point);
+	let eq_bool = multilinear_eq_evals(bool_point);
+	let combined_transparent: Vec<AkitaFieldScalar> = eq_selected
+		.iter()
+		.zip(eq_bool.iter())
+		.map(|(es, eb)| *es + alpha * *eb)
+		.collect();
+
+	// 3. Run the underlying product sumcheck. It internally writes the
+	//    initial claim to the transcript; the verifier independently computes
+	//    `e_selected + alpha · e_bool` and checks it matches via
+	//    `verify_product_sumcheck_transcript`.
+	let (initial_claim, proof, challenges, b_finals, _t_finals) =
+		prove_product_sumcheck_transcript(
+			&[bit_table.to_vec()],
+			&[combined_transparent],
+			transcript,
+		)?;
+
+	// Prover-side sanity check: the initial claim the sumcheck computed from
+	// `sum_x B(x) · T(x)` must equal the verifier's expected `e_selected + alpha · e_bool`.
+	// If this ever fails, either e_selected/e_bool are inconsistent with the
+	// bit_table values, or alpha was sampled out of order with the transcript.
+	debug_assert_eq!(
+		initial_claim,
+		e_selected + alpha * e_bool,
+		"claim reduction sumcheck: prover-side initial-claim mismatch",
+	);
+
+	Ok((alpha, proof, challenges, b_finals[0]))
+}
+
+/// Verify the claim-reduction sumcheck from a Binius transcript.
+///
+/// Mirror of [`prove_claim_reduction_sumcheck_transcript`]. The caller is
+/// responsible for checking that the final bit-table evaluation `b_final` is
+/// consistent with `T(r_final) = eq(selected_point, r_final) + alpha ·
+/// eq(bool_point, r_final)` and the returned `claim_final`. Concretely:
+///
+/// ```text
+/// b_final * T(r_final) == claim_final
+/// ```
+///
+/// where `T(r_final)` is computed from the two public opening points and
+/// `alpha` returned here. The PCS then opens the committed polynomial at
+/// `r_final` (the `challenges` vector) and the opened value is compared
+/// against `b_final`.
+///
+/// # Returns
+///
+/// `(alpha, sumcheck_proof, challenges, claim_final)`.
+pub fn verify_claim_reduction_sumcheck_transcript<Challenger_>(
+	selected_point: &[AkitaFieldScalar],
+	bool_point: &[AkitaFieldScalar],
+	e_selected: AkitaFieldScalar,
+	e_bool: AkitaFieldScalar,
+	num_rounds: usize,
+	transcript: &mut VerifierTranscript<Challenger_>,
+) -> Result<(AkitaFieldScalar, ProductSumcheckProof, Vec<AkitaFieldScalar>, AkitaFieldScalar), Error>
+where
+	Challenger_: Challenger,
+{
+	if selected_point.len() != bool_point.len() || selected_point.len() != num_rounds {
+		return Err(Error::ProofEmpty);
+	}
+	let alpha = wire::verify_sample_akita_scalar(transcript);
+	let expected_initial_claim = e_selected + alpha * e_bool;
+	let (proof, challenges, claim_final) =
+		verify_product_sumcheck_transcript(expected_initial_claim, num_rounds, transcript)?;
+	Ok((alpha, proof, challenges, claim_final))
+}
+
+/// Helper: evaluate the combined transparent `T(r) = eq(selected, r) + alpha · eq(bool, r)`
+/// at the sumcheck-final point. The verifier uses this to bridge
+/// `claim_final = b_final · T(r)` from the sumcheck back to a single-point
+/// opening claim on the committed polynomial.
+pub fn evaluate_claim_reduction_transparent(
+	selected_point: &[AkitaFieldScalar],
+	bool_point: &[AkitaFieldScalar],
+	alpha: AkitaFieldScalar,
+	r_final: &[AkitaFieldScalar],
+) -> Result<AkitaFieldScalar, BatchedParityBridgeError> {
+	let es = evaluate_akita_eq(selected_point, r_final)
+		.ok_or(BatchedParityBridgeError::InvalidSumcheck)?;
+	let eb = evaluate_akita_eq(bool_point, r_final)
+		.ok_or(BatchedParityBridgeError::InvalidSumcheck)?;
+	Ok(es + alpha * eb)
+}
+
+/// Canonical `u128` lift from the Binius binary field to Akita's prime field.
+///
+/// This is useful for diagnostics and for constructing Akita test polynomials,
 /// but it is not a field homomorphism and must not be used as a verifier-accepted
 /// replacement for BaseFold openings.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CanonicalU128Bridge;
 
 impl CanonicalU128Bridge {
-	/// Lift one Binius scalar into Hachi's prime field using its raw canonical bits.
-	pub fn lift(value: BiniusScalar) -> HachiScalar {
-		HachiScalar::from_canonical_u128_reduced(value.val())
+	/// Lift one Binius scalar into Akita's prime field using its raw canonical bits.
+	pub fn lift(value: BiniusScalar) -> AkitaFieldScalar {
+		AkitaFieldScalar::from_canonical_u128_reduced(value.val())
 	}
 
-	/// Lift a slice of Binius scalars into Hachi's prime field.
-	pub fn lift_slice(values: &[BiniusScalar]) -> Vec<HachiScalar> {
+	/// Lift a slice of Binius scalars into Akita's prime field.
+	pub fn lift_slice(values: &[BiniusScalar]) -> Vec<AkitaFieldScalar> {
 		values.iter().copied().map(Self::lift).collect()
 	}
 
@@ -731,7 +894,7 @@ pub enum BatchedParityBridgeError {
 /// Prove the terminal Binius linear claim using the batched parity bridge.
 ///
 /// This prototype computes `opened_sums` directly from witness values. In the
-/// full protocol, those same sums are Hachi opening claims against committed
+/// full protocol, those same sums are Akita opening claims against committed
 /// bit-slice witness polynomials.
 pub fn prove_terminal_linear_claim(
 	oracle: &[BiniusScalar],
@@ -826,11 +989,11 @@ fn bit_at(value: BiniusScalar, bit: usize) -> u64 {
 fn selected_sum_mask_value(
 	coefficient: BiniusScalar,
 	input_bit: usize,
-	alpha_powers: &[HachiScalar],
-) -> HachiScalar {
+	alpha_powers: &[AkitaFieldScalar],
+) -> AkitaFieldScalar {
 	let basis = BiniusScalar::new(1u128 << input_bit);
 	let mut output_bits = (coefficient * basis).val();
-	let mut mask_value = HachiScalar::from_u64(0);
+	let mut mask_value = AkitaFieldScalar::from_u64(0);
 	while output_bits != 0 {
 		let output_bit = output_bits.trailing_zeros() as usize;
 		mask_value += alpha_powers[output_bit];
@@ -839,9 +1002,9 @@ fn selected_sum_mask_value(
 	mask_value
 }
 
-fn powers(base: HachiScalar, len: usize) -> Vec<HachiScalar> {
+fn powers(base: AkitaFieldScalar, len: usize) -> Vec<AkitaFieldScalar> {
 	let mut powers = Vec::with_capacity(len);
-	let mut current = HachiScalar::from_u64(1);
+	let mut current = AkitaFieldScalar::from_u64(1);
 	for _ in 0..len {
 		powers.push(current);
 		current *= base;
@@ -849,11 +1012,11 @@ fn powers(base: HachiScalar, len: usize) -> Vec<HachiScalar> {
 	powers
 }
 
-fn multilinear_eq_evals(point: &[HachiScalar]) -> Vec<HachiScalar> {
-	let mut evals = vec![HachiScalar::from_u64(1)];
+fn multilinear_eq_evals(point: &[AkitaFieldScalar]) -> Vec<AkitaFieldScalar> {
+	let mut evals = vec![AkitaFieldScalar::from_u64(1)];
 	for &coordinate in point {
 		let len = evals.len();
-		let one_minus_coordinate = HachiScalar::from_u64(1) - coordinate;
+		let one_minus_coordinate = AkitaFieldScalar::from_u64(1) - coordinate;
 		for index in 0..len {
 			let value = evals[index];
 			evals[index] = value * one_minus_coordinate;
@@ -864,11 +1027,11 @@ fn multilinear_eq_evals(point: &[HachiScalar]) -> Vec<HachiScalar> {
 }
 
 /// Evaluate the multilinear equality polynomial `eq(left, right)`.
-pub fn evaluate_hachi_eq(left: &[HachiScalar], right: &[HachiScalar]) -> Option<HachiScalar> {
+pub fn evaluate_akita_eq(left: &[AkitaFieldScalar], right: &[AkitaFieldScalar]) -> Option<AkitaFieldScalar> {
 	if left.len() != right.len() {
 		return None;
 	}
-	let one = HachiScalar::from_u64(1);
+	let one = AkitaFieldScalar::from_u64(1);
 	Some(
 		left.iter()
 			.zip(right)
@@ -876,17 +1039,17 @@ pub fn evaluate_hachi_eq(left: &[HachiScalar], right: &[HachiScalar]) -> Option<
 	)
 }
 
-fn product_sum(lefts: &[Vec<HachiScalar>], rights: &[Vec<HachiScalar>]) -> HachiScalar {
+fn product_sum(lefts: &[Vec<AkitaFieldScalar>], rights: &[Vec<AkitaFieldScalar>]) -> AkitaFieldScalar {
 	lefts
 		.iter()
 		.zip(rights)
 		.flat_map(|(left, right)| left.iter().zip(right))
-		.fold(HachiScalar::from_u64(0), |acc, (&left, &right)| acc + left * right)
+		.fold(AkitaFieldScalar::from_u64(0), |acc, (&left, &right)| acc + left * right)
 }
 
 fn validate_weighted_booleanity_inputs(
-	bit_table: &[HachiScalar],
-	weight_point: &[HachiScalar],
+	bit_table: &[AkitaFieldScalar],
+	weight_point: &[AkitaFieldScalar],
 ) -> Result<(), BatchedParityBridgeError> {
 	if bit_table.is_empty() || !bit_table.len().is_power_of_two() {
 		return Err(BatchedParityBridgeError::InvalidSumcheck);
@@ -897,28 +1060,28 @@ fn validate_weighted_booleanity_inputs(
 	Ok(())
 }
 
-fn weighted_booleanity_sum(bits: &[HachiScalar], weights: &[HachiScalar]) -> HachiScalar {
+fn weighted_booleanity_sum(bits: &[AkitaFieldScalar], weights: &[AkitaFieldScalar]) -> AkitaFieldScalar {
 	debug_assert_eq!(bits.len(), weights.len());
-	let one = HachiScalar::from_u64(1);
+	let one = AkitaFieldScalar::from_u64(1);
 	bits.iter()
 		.zip(weights)
-		.fold(HachiScalar::from_u64(0), |acc, (&bit, &weight)| acc + weight * bit * (bit - one))
+		.fold(AkitaFieldScalar::from_u64(0), |acc, (&bit, &weight)| acc + weight * bit * (bit - one))
 }
 
 fn weighted_booleanity_round_evals(
-	bits: &[HachiScalar],
-	weights: &[HachiScalar],
-) -> [HachiScalar; 4] {
+	bits: &[AkitaFieldScalar],
+	weights: &[AkitaFieldScalar],
+) -> [AkitaFieldScalar; 4] {
 	debug_assert_eq!(bits.len(), weights.len());
-	let one = HachiScalar::from_u64(1);
-	let mut evals = [HachiScalar::from_u64(0); 4];
+	let one = AkitaFieldScalar::from_u64(1);
+	let mut evals = [AkitaFieldScalar::from_u64(0); 4];
 	for (bit_pair, weight_pair) in bits.chunks_exact(2).zip(weights.chunks_exact(2)) {
 		let bit0 = bit_pair[0];
 		let bit_delta = bit_pair[1] - bit0;
 		let weight0 = weight_pair[0];
 		let weight_delta = weight_pair[1] - weight0;
 		for (t, eval) in evals.iter_mut().enumerate() {
-			let t = HachiScalar::from_u64(t as u64);
+			let t = AkitaFieldScalar::from_u64(t as u64);
 			let bit_t = bit0 + t * bit_delta;
 			let weight_t = weight0 + t * weight_delta;
 			*eval += weight_t * bit_t * (bit_t - one);
@@ -928,11 +1091,11 @@ fn weighted_booleanity_round_evals(
 }
 
 fn product_round_evals(
-	lefts: &[Vec<HachiScalar>],
-	rights: &[Vec<HachiScalar>],
-) -> [HachiScalar; 3] {
-	let two = HachiScalar::from_u64(2);
-	let mut evals = [HachiScalar::from_u64(0); 3];
+	lefts: &[Vec<AkitaFieldScalar>],
+	rights: &[Vec<AkitaFieldScalar>],
+) -> [AkitaFieldScalar; 3] {
+	let two = AkitaFieldScalar::from_u64(2);
+	let mut evals = [AkitaFieldScalar::from_u64(0); 3];
 	for (left, right) in lefts.iter().zip(rights) {
 		for (left_pair, right_pair) in left.chunks_exact(2).zip(right.chunks_exact(2)) {
 			let left0 = left_pair[0];
@@ -949,7 +1112,7 @@ fn product_round_evals(
 	evals
 }
 
-fn fold_evals(evals: &mut Vec<HachiScalar>, challenge: HachiScalar) {
+fn fold_evals(evals: &mut Vec<AkitaFieldScalar>, challenge: AkitaFieldScalar) {
 	let half = evals.len() / 2;
 	for i in 0..half {
 		evals[i] = evals[2 * i] + challenge * (evals[2 * i + 1] - evals[2 * i]);
@@ -957,45 +1120,45 @@ fn fold_evals(evals: &mut Vec<HachiScalar>, challenge: HachiScalar) {
 	evals.truncate(half);
 }
 
-fn evaluate_quadratic_from_0_1_2(evals: [HachiScalar; 3], x: HachiScalar) -> HachiScalar {
-	let two = HachiScalar::from_u64(2);
+fn evaluate_quadratic_from_0_1_2(evals: [AkitaFieldScalar; 3], x: AkitaFieldScalar) -> AkitaFieldScalar {
+	let two = AkitaFieldScalar::from_u64(2);
 	let inv_two = two
-		.inv()
-		.expect("2 is invertible in Hachi's odd prime field");
+		.inverse()
+		.expect("2 is invertible in Akita's odd prime field");
 	let c0 = evals[0];
 	let c2 = (evals[2] - two * evals[1] + evals[0]) * inv_two;
 	let c1 = evals[1] - c0 - c2;
 	c0 + c1 * x + c2 * x * x
 }
 
-fn evaluate_cubic_from_0_1_2_3(evals: [HachiScalar; 4], x: HachiScalar) -> HachiScalar {
-	let one = HachiScalar::from_u64(1);
-	let two = HachiScalar::from_u64(2);
-	let three = HachiScalar::from_u64(3);
-	let six = HachiScalar::from_u64(6);
+fn evaluate_cubic_from_0_1_2_3(evals: [AkitaFieldScalar; 4], x: AkitaFieldScalar) -> AkitaFieldScalar {
+	let one = AkitaFieldScalar::from_u64(1);
+	let two = AkitaFieldScalar::from_u64(2);
+	let three = AkitaFieldScalar::from_u64(3);
+	let six = AkitaFieldScalar::from_u64(6);
 	let inv_two = two
-		.inv()
-		.expect("2 is invertible in Hachi's odd prime field");
+		.inverse()
+		.expect("2 is invertible in Akita's odd prime field");
 	let inv_six = six
-		.inv()
-		.expect("6 is invertible in Hachi's odd prime field");
+		.inverse()
+		.expect("6 is invertible in Akita's odd prime field");
 
 	let x_minus_one = x - one;
 	let x_minus_two = x - two;
 	let x_minus_three = x - three;
-	let l0 = HachiScalar::from_u64(0) - x_minus_one * x_minus_two * x_minus_three * inv_six;
+	let l0 = AkitaFieldScalar::from_u64(0) - x_minus_one * x_minus_two * x_minus_three * inv_six;
 	let l1 = x * x_minus_two * x_minus_three * inv_two;
-	let l2 = HachiScalar::from_u64(0) - x * x_minus_one * x_minus_three * inv_two;
+	let l2 = AkitaFieldScalar::from_u64(0) - x * x_minus_one * x_minus_three * inv_two;
 	let l3 = x * x_minus_one * x_minus_two * inv_six;
 	evals[0] * l0 + evals[1] * l1 + evals[2] * l2 + evals[3] * l3
 }
 
-/// Why the current Hachi adapter cannot yet be wired as a strict PCS backend.
+/// Why the current Akita adapter cannot yet be wired as a strict PCS backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeObstruction {
-	/// Binary-field addition is XOR, while Hachi `fp128` addition is prime-field addition.
+	/// Binary-field addition is XOR, while Akita `fp128` addition is prime-field addition.
 	NotAdditive,
-	/// Binary-field multiplication and Hachi `fp128` multiplication are different operations.
+	/// Binary-field multiplication and Akita `fp128` multiplication are different operations.
 	NotMultiplicative,
 }
 
@@ -1111,12 +1274,12 @@ mod tests {
 			BiniusScalar::new(0xdef0),
 		];
 		let (claim, parity_proof) = prove_terminal_linear_claim(&oracle, &transparent).unwrap();
-		let alpha = HachiScalar::from_u64(17);
+		let alpha = AkitaFieldScalar::from_u64(17);
 		let bit_slices = BitSliceOracle::from_binius_oracle(&oracle);
 		let masks = batched_selected_sum_masks(&transparent, alpha);
 		let expected_batched_sum = batched_u64_sum(&parity_proof.opened_sums, alpha);
 
-		let challenges = [HachiScalar::from_u64(3), HachiScalar::from_u64(5)];
+		let challenges = [AkitaFieldScalar::from_u64(3), AkitaFieldScalar::from_u64(5)];
 		let (sumcheck_claim, proof, final_lefts, final_rights) =
 			prove_product_sumcheck(&bit_slices.bit_polys, &masks, &challenges).unwrap();
 
@@ -1125,7 +1288,7 @@ mod tests {
 		let final_opening_claim = final_lefts
 			.iter()
 			.zip(&final_rights)
-			.fold(HachiScalar::from_u64(0), |acc, (&left, &right)| acc + left * right);
+			.fold(AkitaFieldScalar::from_u64(0), |acc, (&left, &right)| acc + left * right);
 		assert_eq!(final_claim, final_opening_claim);
 		parity_proof.verify(&transparent, claim).unwrap();
 	}
@@ -1140,16 +1303,16 @@ mod tests {
 		];
 		let bit_slices = BitSliceOracle::from_binius_oracle(&oracle);
 		let (lefts, rights) = booleanity_sumcheck_inputs(&bit_slices);
-		let challenges = [HachiScalar::from_u64(19), HachiScalar::from_u64(23)];
+		let challenges = [AkitaFieldScalar::from_u64(19), AkitaFieldScalar::from_u64(23)];
 		let (claim, proof, final_lefts, final_rights) =
 			prove_product_sumcheck(&lefts, &rights, &challenges).unwrap();
 
-		assert_eq!(claim, HachiScalar::from_u64(0));
+		assert_eq!(claim, AkitaFieldScalar::from_u64(0));
 		let final_claim = proof.verify_rounds(claim, &challenges).unwrap();
 		let final_opening_claim = final_lefts
 			.iter()
 			.zip(&final_rights)
-			.fold(HachiScalar::from_u64(0), |acc, (&left, &right)| acc + left * right);
+			.fold(AkitaFieldScalar::from_u64(0), |acc, (&left, &right)| acc + left * right);
 		assert_eq!(final_claim, final_opening_claim);
 	}
 
@@ -1157,101 +1320,28 @@ mod tests {
 	fn booleanity_product_sumcheck_rejects_non_boolean_slice() {
 		let oracle = [BiniusScalar::new(0), BiniusScalar::new(1)];
 		let mut bit_slices = BitSliceOracle::from_binius_oracle(&oracle);
-		bit_slices.bit_polys[0][0] = HachiScalar::from_u64(2);
+		bit_slices.bit_polys[0][0] = AkitaFieldScalar::from_u64(2);
 		let (lefts, rights) = booleanity_sumcheck_inputs(&bit_slices);
-		let challenges = [HachiScalar::from_u64(29)];
+		let challenges = [AkitaFieldScalar::from_u64(29)];
 		let (claim, proof, final_lefts, final_rights) =
 			prove_product_sumcheck(&lefts, &rights, &challenges).unwrap();
 
-		assert_ne!(claim, HachiScalar::from_u64(0));
+		assert_ne!(claim, AkitaFieldScalar::from_u64(0));
 		let final_claim = proof.verify_rounds(claim, &challenges).unwrap();
 		let final_opening_claim = final_lefts
 			.iter()
 			.zip(&final_rights)
-			.fold(HachiScalar::from_u64(0), |acc, (&left, &right)| acc + left * right);
+			.fold(AkitaFieldScalar::from_u64(0), |acc, (&left, &right)| acc + left * right);
 		assert_eq!(final_claim, final_opening_claim);
 	}
 
-	#[test]
-	fn hachi_batched_opening_round_trips_bit_slices() {
-		use hachi_pcs::algebra::poly::multilinear_eval;
-		use hachi_pcs::protocol::commitment::presets::fp128;
-		use hachi_pcs::protocol::commitment_scheme::HachiCommitmentScheme;
-		use hachi_pcs::protocol::transcript::Blake2bTranscript;
-		use hachi_pcs::{BasisMode, CommitmentScheme, Transcript};
-
-		type Cfg = fp128::D128Full;
-		const D: usize = 128;
-		type Scheme = HachiCommitmentScheme<D, Cfg>;
-
-		let oracle = (0..128)
-			.map(|i| BiniusScalar::new((i as u128) * 0x0101_0101_0101_0101))
-			.collect::<Vec<_>>();
-		let bit_slices = BitSliceOracle::from_binius_oracle(&oracle);
-		let polys = bit_slices.to_dense_polys::<D>().unwrap();
-		let point = vec![
-			HachiScalar::from_u64(7),
-			HachiScalar::from_u64(11),
-			HachiScalar::from_u64(13),
-			HachiScalar::from_u64(17),
-			HachiScalar::from_u64(19),
-			HachiScalar::from_u64(23),
-			HachiScalar::from_u64(29),
-		];
-		let openings = bit_slices
-			.bit_polys
-			.iter()
-			.map(|evals| multilinear_eval(evals, &point).unwrap())
-			.collect::<Vec<_>>();
-
-		let setup = <Scheme as CommitmentScheme<HachiScalar, D>>::setup_prover(14, 128, 1);
-		let verifier_setup = <Scheme as CommitmentScheme<HachiScalar, D>>::setup_verifier(&setup);
-		let mut commitments = Vec::with_capacity(polys.len());
-		let mut hints = Vec::with_capacity(polys.len());
-		for poly in &polys {
-			let (commitment, hint) = <Scheme as CommitmentScheme<HachiScalar, D>>::commit(
-				std::slice::from_ref(poly),
-				&setup,
-			)
-			.unwrap();
-			commitments.push(commitment);
-			hints.push(hint);
-		}
-
-		let poly_refs = polys.iter().map(|poly| [poly]).collect::<Vec<_>>();
-		let poly_groups = poly_refs.iter().map(|group| &group[..]).collect::<Vec<_>>();
-		let opening_values = openings
-			.iter()
-			.map(|opening| [*opening])
-			.collect::<Vec<_>>();
-		let opening_groups = opening_values
-			.iter()
-			.map(|group| &group[..])
-			.collect::<Vec<_>>();
-		let mut prover_transcript = Blake2bTranscript::<HachiScalar>::new(b"bit_slices");
-		let proof = <Scheme as CommitmentScheme<HachiScalar, D>>::batched_prove(
-			&setup,
-			&[&poly_groups[..]],
-			&[&point[..]],
-			vec![hints],
-			&mut prover_transcript,
-			&[&commitments[..]],
-			BasisMode::Lagrange,
-		)
-		.unwrap();
-
-		let mut verifier_transcript = Blake2bTranscript::<HachiScalar>::new(b"bit_slices");
-		<Scheme as CommitmentScheme<HachiScalar, D>>::batched_verify(
-			&proof,
-			&verifier_setup,
-			&mut verifier_transcript,
-			&[&point[..]],
-			&[&opening_groups[..]],
-			&[&commitments[..]],
-			BasisMode::Lagrange,
-		)
-		.unwrap();
-	}
+	// The Akita PCS round-trip on the bit-slice oracle is covered end-to-end
+	// by `akita_proof_mode_mismatches_reject` in
+	// `crates/prover/tests/prove_verify.rs` (positive roundtrip on a real
+	// SHA-256 preimage circuit). A unit-scoped equivalent of that test used
+	// to live here, but it depended on the old monolithic `CommitmentScheme`
+	// trait that was decomposed upstream into `CommitmentProver` and
+	// `CommitmentVerifier`. Removed in the 2026-05 bridge cleanup.
 
 	#[test]
 	fn bit_table_product_sumchecks_reduce_to_single_opening() {
@@ -1264,11 +1354,11 @@ mod tests {
 		let bit_slices = BitSliceOracle::from_binius_oracle(&oracle);
 		let bit_table = bit_slices.to_bit_table_evals();
 		let (_claim, parity) = prove_terminal_linear_claim(&oracle, &transparent).unwrap();
-		let alpha = HachiScalar::from_u64(31);
+		let alpha = AkitaFieldScalar::from_u64(31);
 		let selected_mask = batched_selected_sum_table_mask(&transparent, alpha);
 		let selected_claim = batched_u64_sum(&parity.opened_sums, alpha);
 		let challenges = (0..10)
-			.map(|i| HachiScalar::from_u64(37 + i as u64))
+			.map(|i| AkitaFieldScalar::from_u64(37 + i as u64))
 			.collect::<Vec<_>>();
 		let (claim, proof, left, right) =
 			prove_product_sumcheck(&[bit_table.clone()], &[selected_mask], &challenges).unwrap();
@@ -1278,71 +1368,71 @@ mod tests {
 		let (bool_lefts, bool_rights) = booleanity_table_sumcheck_inputs(&bit_table);
 		let (bool_claim, bool_proof, bool_left, bool_right) =
 			prove_product_sumcheck(&bool_lefts, &bool_rights, &challenges).unwrap();
-		assert_eq!(bool_claim, HachiScalar::from_u64(0));
+		assert_eq!(bool_claim, AkitaFieldScalar::from_u64(0));
 		assert_eq!(
 			bool_proof.verify_rounds(bool_claim, &challenges).unwrap(),
 			bool_left[0] * bool_right[0]
 		);
 
 		let weight_point = (0..10)
-			.map(|i| HachiScalar::from_u64(101 + i as u64))
+			.map(|i| AkitaFieldScalar::from_u64(101 + i as u64))
 			.collect::<Vec<_>>();
 		let (weighted_claim, weighted_proof, bool_opening) =
 			prove_weighted_booleanity_sumcheck(&bit_table, &weight_point, &challenges).unwrap();
-		assert_eq!(weighted_claim, HachiScalar::from_u64(0));
+		assert_eq!(weighted_claim, AkitaFieldScalar::from_u64(0));
 		let weighted_final = weighted_proof
 			.verify_rounds(weighted_claim, &challenges)
 			.unwrap();
-		let final_weight = evaluate_hachi_eq(&weight_point, &challenges).unwrap();
+		let final_weight = evaluate_akita_eq(&weight_point, &challenges).unwrap();
 		assert_eq!(
 			weighted_final,
-			final_weight * bool_opening * (bool_opening - HachiScalar::from_u64(1))
+			final_weight * bool_opening * (bool_opening - AkitaFieldScalar::from_u64(1))
 		);
 	}
 
 	#[test]
 	fn weighted_booleanity_rejects_cancelling_non_boolean_table() {
-		let inv_five = HachiScalar::from_u64(5)
-			.inv()
-			.expect("5 is invertible in Hachi's field");
+		let inv_five = AkitaFieldScalar::from_u64(5)
+			.inverse()
+			.expect("5 is invertible in Akita's field");
 		let bit_table = vec![
-			HachiScalar::from_u64(2) * inv_five,
-			HachiScalar::from_u64(0) - inv_five,
+			AkitaFieldScalar::from_u64(2) * inv_five,
+			AkitaFieldScalar::from_u64(0) - inv_five,
 		];
 
 		let (lefts, rights) = booleanity_table_sumcheck_inputs(&bit_table);
 		let (unweighted_claim, _, _, _) =
-			prove_product_sumcheck(&lefts, &rights, &[HachiScalar::from_u64(7)]).unwrap();
-		assert_eq!(unweighted_claim, HachiScalar::from_u64(0));
+			prove_product_sumcheck(&lefts, &rights, &[AkitaFieldScalar::from_u64(7)]).unwrap();
+		assert_eq!(unweighted_claim, AkitaFieldScalar::from_u64(0));
 
-		let weight_point = [HachiScalar::from_u64(3)];
+		let weight_point = [AkitaFieldScalar::from_u64(3)];
 		let (weighted_claim, weighted_proof, bool_opening) = prove_weighted_booleanity_sumcheck(
 			&bit_table,
 			&weight_point,
-			&[HachiScalar::from_u64(7)],
+			&[AkitaFieldScalar::from_u64(7)],
 		)
 		.unwrap();
-		assert_ne!(weighted_claim, HachiScalar::from_u64(0));
+		assert_ne!(weighted_claim, AkitaFieldScalar::from_u64(0));
 		assert_eq!(
-			weighted_proof.verify_rounds(weighted_claim, &[HachiScalar::from_u64(7)]),
-			Ok(evaluate_hachi_eq(&weight_point, &[HachiScalar::from_u64(7)]).unwrap()
+			weighted_proof.verify_rounds(weighted_claim, &[AkitaFieldScalar::from_u64(7)]),
+			Ok(evaluate_akita_eq(&weight_point, &[AkitaFieldScalar::from_u64(7)]).unwrap()
 				* bool_opening
-				* (bool_opening - HachiScalar::from_u64(1)))
+				* (bool_opening - AkitaFieldScalar::from_u64(1)))
 		);
 	}
 
 	#[test]
 	fn selected_table_mask_lazy_eval_matches_materialized() {
-		use hachi_pcs::algebra::poly::multilinear_eval;
+		use akita_algebra::poly::multilinear_eval;
 
 		let transparent = (0..8)
 			.map(|i| {
 				BiniusScalar::new(((i as u128) + 1) * 0x0101_0203_0508_0d15_2237_5990_e979_62db)
 			})
 			.collect::<Vec<_>>();
-		let alpha = HachiScalar::from_u64(43);
+		let alpha = AkitaFieldScalar::from_u64(43);
 		let point = (0..10)
-			.map(|i| HachiScalar::from_u64(47 + i as u64))
+			.map(|i| AkitaFieldScalar::from_u64(47 + i as u64))
 			.collect::<Vec<_>>();
 
 		let selected_mask = batched_selected_sum_table_mask(&transparent, alpha);
@@ -1355,7 +1445,7 @@ mod tests {
 	#[test]
 	fn constant_structured_relation_matches_materialized_checks() {
 		use binius_math::{FieldBuffer, multilinear::evaluate::evaluate_inplace};
-		use hachi_pcs::algebra::poly::multilinear_eval;
+		use akita_algebra::poly::multilinear_eval;
 
 		let log_len = 4;
 		let coefficient = BiniusScalar::new(0x0101_0203_0508_0d15_2237_5990_e979_62db);
@@ -1371,13 +1461,13 @@ mod tests {
 
 		assert_eq!(relation.parity_sum_bounds(), parity_sum_bounds(&transparent));
 
-		let alpha = HachiScalar::from_u64(43);
-		let hachi_point = (0..log_len + 7)
-			.map(|i| HachiScalar::from_u64(47 + i as u64))
+		let alpha = AkitaFieldScalar::from_u64(43);
+		let akita_point = (0..log_len + 7)
+			.map(|i| AkitaFieldScalar::from_u64(47 + i as u64))
 			.collect::<Vec<_>>();
 		let selected_mask = batched_selected_sum_table_mask(&transparent, alpha);
-		let materialized_mask_eval = multilinear_eval(&selected_mask, &hachi_point).unwrap();
-		assert_eq!(relation.eval_selected_mask(alpha, &hachi_point), Ok(materialized_mask_eval));
+		let materialized_mask_eval = multilinear_eval(&selected_mask, &akita_point).unwrap();
+		assert_eq!(relation.eval_selected_mask(alpha, &akita_point), Ok(materialized_mask_eval));
 	}
 
 	#[test]
@@ -1389,7 +1479,7 @@ mod tests {
 			Err(BatchedParityBridgeError::InvalidSumcheck)
 		);
 		assert_eq!(
-			relation.eval_selected_mask(HachiScalar::from_u64(5), &[HachiScalar::from_u64(1)]),
+			relation.eval_selected_mask(AkitaFieldScalar::from_u64(5), &[AkitaFieldScalar::from_u64(1)]),
 			Err(BatchedParityBridgeError::InvalidSumcheck)
 		);
 	}

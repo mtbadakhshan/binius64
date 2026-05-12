@@ -1,57 +1,56 @@
 // Copyright 2026 The Binius Developers
 
-//! Wire helpers for embedding Hachi proof objects in a Binius transcript.
+//! Wire helpers for embedding Akita proof objects in a Binius transcript.
+
+use std::io::Cursor;
 
 use binius_transcript::{
 	ProverTranscript, VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use hachi_pcs::{
-	CanonicalField, HachiDeserialize, HachiSerialize,
-	primitives::serialization::Compress,
-	protocol::proof::{
-		DirectWitnessShape, HachiBatchedProofShape, HachiProofStepShape, HachiStage1StageShape,
-		LevelProofShape,
-	},
-};
-use std::io::Cursor;
 
-use crate::{
-	channel::Error,
-	hachi_bridge::{BiniusScalar, HachiScalar},
+use akita_field::CanonicalField;
+use akita_serialization::{AkitaDeserialize, AkitaSerialize, Compress};
+use akita_types::{
+	AkitaBatchedProofShape, AkitaProofStepShape, AkitaStage1StageShape, DirectWitnessShape,
+	LevelProofShape,
 };
 
-/// Maximum bytes accepted for one length-prefixed Hachi object.
+use binius_iop::channel::Error;
+
+use crate::protocol::{AkitaFieldScalar, BiniusScalar};
+
+/// Maximum bytes accepted for one length-prefixed Akita object.
 ///
 /// This keeps malformed proofs from forcing unbounded allocations while leaving ample headroom
 /// above the current succinct bridge proof sizes.
-const MAX_HACHI_ENCODED_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_AKITA_ENCODED_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Write a Hachi-serializable value to the Binius transcript.
-pub fn write_hachi<T, Challenger_>(transcript: &mut ProverTranscript<Challenger_>, value: &T)
+/// Write a Akita-serialisable value to the Binius transcript.
+pub fn write_akita<T, Challenger_>(transcript: &mut ProverTranscript<Challenger_>, value: &T)
 where
-	T: HachiSerialize,
+	T: AkitaSerialize,
 	Challenger_: Challenger,
 {
 	let mut bytes = Vec::new();
 	value
 		.serialize_with_mode(&mut bytes, Compress::Yes)
-		.expect("Hachi serialization into Vec should not fail");
+		.expect("Akita serialization into Vec should not fail");
 	transcript.message().write(&(bytes.len() as u64));
 	transcript.message().write_bytes(&bytes);
 }
 
-/// Read a Hachi-serializable value from the Binius transcript.
-pub fn read_hachi<T, Challenger_>(
+/// Read a Akita-serialisable value from the Binius transcript.
+pub fn read_akita<T, Challenger_>(
 	transcript: &mut VerifierTranscript<Challenger_>,
 	ctx: &T::Context,
 ) -> Result<T, Error>
 where
-	T: HachiDeserialize,
+	T: AkitaDeserialize,
 	Challenger_: Challenger,
 {
 	let len: u64 = transcript.message().read().map_err(|_| Error::ProofEmpty)?;
-	if len > MAX_HACHI_ENCODED_OBJECT_BYTES {
+	if len > MAX_AKITA_ENCODED_OBJECT_BYTES {
 		return Err(Error::ProofEmpty);
 	}
 	let mut bytes = vec![0u8; len as usize];
@@ -67,69 +66,69 @@ where
 	Ok(value)
 }
 
-/// Sample a Hachi scalar from the Binius Fiat-Shamir transcript.
-pub fn sample_hachi_scalar<Challenger_>(
+/// Sample a Akita scalar from the Binius Fiat-Shamir transcript.
+pub fn sample_akita_scalar<Challenger_>(
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> HachiScalar
+) -> AkitaFieldScalar
 where
 	Challenger_: Challenger,
 {
 	loop {
 		let sample = CanSample::<BiniusScalar>::sample(transcript).val();
-		if let Some(scalar) = HachiScalar::from_canonical_u128_checked(sample) {
+		if let Some(scalar) = AkitaFieldScalar::from_canonical_u128_checked(sample) {
 			return scalar;
 		}
 	}
 }
 
-/// Sample multiple Hachi scalars from the Binius Fiat-Shamir transcript.
-pub fn sample_hachi_scalar_vec<Challenger_>(
+/// Sample multiple Akita scalars from the Binius Fiat-Shamir transcript.
+pub fn sample_akita_scalar_vec<Challenger_>(
 	transcript: &mut ProverTranscript<Challenger_>,
 	len: usize,
-) -> Vec<HachiScalar>
+) -> Vec<AkitaFieldScalar>
 where
 	Challenger_: Challenger,
 {
-	(0..len).map(|_| sample_hachi_scalar(transcript)).collect()
+	(0..len).map(|_| sample_akita_scalar(transcript)).collect()
 }
 
-/// Sample a Hachi scalar from a verifier transcript.
-pub fn verify_sample_hachi_scalar<Challenger_>(
+/// Sample a Akita scalar from a verifier transcript.
+pub fn verify_sample_akita_scalar<Challenger_>(
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> HachiScalar
+) -> AkitaFieldScalar
 where
 	Challenger_: Challenger,
 {
 	loop {
 		let sample = CanSample::<BiniusScalar>::sample(transcript).val();
-		if let Some(scalar) = HachiScalar::from_canonical_u128_checked(sample) {
+		if let Some(scalar) = AkitaFieldScalar::from_canonical_u128_checked(sample) {
 			return scalar;
 		}
 	}
 }
 
-/// Sample multiple Hachi scalars from a verifier transcript.
-pub fn verify_sample_hachi_scalar_vec<Challenger_>(
+/// Sample multiple Akita scalars from a verifier transcript.
+pub fn verify_sample_akita_scalar_vec<Challenger_>(
 	transcript: &mut VerifierTranscript<Challenger_>,
 	len: usize,
-) -> Vec<HachiScalar>
+) -> Vec<AkitaFieldScalar>
 where
 	Challenger_: Challenger,
 {
 	(0..len)
-		.map(|_| verify_sample_hachi_scalar(transcript))
+		.map(|_| verify_sample_akita_scalar(transcript))
 		.collect()
 }
 
-/// Write a Hachi batched proof shape.
+/// Write a Akita batched proof shape.
 pub fn write_batched_shape<Challenger_>(
 	transcript: &mut ProverTranscript<Challenger_>,
-	shape: &HachiBatchedProofShape,
+	shape: &AkitaBatchedProofShape,
 ) where
 	Challenger_: Challenger,
 {
 	match shape {
-		HachiBatchedProofShape::Fold {
+		AkitaBatchedProofShape::Fold {
 			root_shape,
 			step_shapes,
 		} => {
@@ -140,7 +139,7 @@ pub fn write_batched_shape<Challenger_>(
 				write_step_shape(transcript, step);
 			}
 		}
-		HachiBatchedProofShape::Direct { witness_shapes } => {
+		AkitaBatchedProofShape::Direct { witness_shapes } => {
 			transcript.message().write(&1u8);
 			transcript.message().write(&(witness_shapes.len() as u64));
 			for shape in witness_shapes {
@@ -150,10 +149,10 @@ pub fn write_batched_shape<Challenger_>(
 	}
 }
 
-/// Read a Hachi batched proof shape.
+/// Read a Akita batched proof shape.
 pub fn read_batched_shape<Challenger_>(
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<HachiBatchedProofShape, Error>
+) -> Result<AkitaBatchedProofShape, Error>
 where
 	Challenger_: Challenger,
 {
@@ -166,7 +165,7 @@ where
 			for _ in 0..n_steps {
 				step_shapes.push(read_step_shape(transcript)?);
 			}
-			Ok(HachiBatchedProofShape::Fold {
+			Ok(AkitaBatchedProofShape::Fold {
 				root_shape,
 				step_shapes,
 			})
@@ -177,7 +176,7 @@ where
 			for _ in 0..n_witnesses {
 				witness_shapes.push(read_direct_shape(transcript)?);
 			}
-			Ok(HachiBatchedProofShape::Direct { witness_shapes })
+			Ok(AkitaBatchedProofShape::Direct { witness_shapes })
 		}
 		_ => Err(Error::ProofEmpty),
 	}
@@ -221,7 +220,7 @@ where
 	let n_stages = read_usize(transcript)?;
 	let mut stage1_stages = Vec::with_capacity(n_stages);
 	for _ in 0..n_stages {
-		stage1_stages.push(HachiStage1StageShape {
+		stage1_stages.push(AkitaStage1StageShape {
 			sumcheck: (read_usize(transcript)?, read_usize(transcript)?),
 			child_claims: read_usize(transcript)?,
 		});
@@ -239,16 +238,16 @@ where
 
 fn write_step_shape<Challenger_>(
 	transcript: &mut ProverTranscript<Challenger_>,
-	shape: &HachiProofStepShape,
+	shape: &AkitaProofStepShape,
 ) where
 	Challenger_: Challenger,
 {
 	match shape {
-		HachiProofStepShape::Fold(shape) => {
+		AkitaProofStepShape::Fold(shape) => {
 			transcript.message().write(&0u8);
 			write_level_shape(transcript, shape);
 		}
-		HachiProofStepShape::Direct(shape) => {
+		AkitaProofStepShape::Direct(shape) => {
 			transcript.message().write(&1u8);
 			write_direct_shape(transcript, shape);
 		}
@@ -257,14 +256,14 @@ fn write_step_shape<Challenger_>(
 
 fn read_step_shape<Challenger_>(
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<HachiProofStepShape, Error>
+) -> Result<AkitaProofStepShape, Error>
 where
 	Challenger_: Challenger,
 {
 	let tag: u8 = transcript.message().read().map_err(|_| Error::ProofEmpty)?;
 	match tag {
-		0 => Ok(HachiProofStepShape::Fold(read_level_shape(transcript)?)),
-		1 => Ok(HachiProofStepShape::Direct(read_direct_shape(transcript)?)),
+		0 => Ok(AkitaProofStepShape::Fold(read_level_shape(transcript)?)),
+		1 => Ok(AkitaProofStepShape::Direct(read_direct_shape(transcript)?)),
 		_ => Err(Error::ProofEmpty),
 	}
 }
@@ -315,14 +314,16 @@ where
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use binius_transcript::fiat_shamir::HasherChallenger;
-	use hachi_pcs::{FromSmallInt, HachiSerialize, primitives::serialization::Compress};
 	use sha2::Sha256;
+
+	use super::*;
+	use akita_field::FromPrimitiveInt;
+	use akita_serialization::{AkitaSerialize, Compress};
 
 	type TestChallenger = HasherChallenger<Sha256>;
 
-	fn verifier_transcript_from_hachi_payload(
+	fn verifier_transcript_from_payload(
 		payload: &[u8],
 	) -> VerifierTranscript<TestChallenger> {
 		let mut prover_transcript = ProverTranscript::new(TestChallenger::default());
@@ -332,27 +333,27 @@ mod tests {
 	}
 
 	#[test]
-	fn read_hachi_rejects_trailing_bytes() {
-		let scalar = HachiScalar::from_u64(42);
+	fn read_akita_rejects_trailing_bytes() {
+		let scalar = AkitaFieldScalar::from_u64(42);
 		let mut payload = Vec::new();
 		scalar
 			.serialize_with_mode(&mut payload, Compress::Yes)
 			.unwrap();
 		payload.push(0);
 
-		let mut verifier_transcript = verifier_transcript_from_hachi_payload(&payload);
+		let mut verifier_transcript = verifier_transcript_from_payload(&payload);
 
-		assert!(read_hachi::<HachiScalar, _>(&mut verifier_transcript, &()).is_err());
+		assert!(read_akita::<AkitaFieldScalar, _>(&mut verifier_transcript, &()).is_err());
 	}
 
 	#[test]
-	fn read_hachi_rejects_oversized_payload_before_allocation() {
+	fn read_akita_rejects_oversized_payload_before_allocation() {
 		let mut prover_transcript = ProverTranscript::new(TestChallenger::default());
 		prover_transcript
 			.message()
-			.write(&(MAX_HACHI_ENCODED_OBJECT_BYTES + 1));
+			.write(&(MAX_AKITA_ENCODED_OBJECT_BYTES + 1));
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		assert!(read_hachi::<HachiScalar, _>(&mut verifier_transcript, &()).is_err());
+		assert!(read_akita::<AkitaFieldScalar, _>(&mut verifier_transcript, &()).is_err());
 	}
 }

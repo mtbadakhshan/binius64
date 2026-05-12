@@ -9,12 +9,16 @@ use binius_field::{
 	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
 	PackedField, UnderlierWithBitOps, WithUnderlier,
 };
-#[cfg(feature = "hachi")]
-use binius_iop::hachi_succinct_channel::HachiSuccinctSetup;
-#[cfg(feature = "hachi")]
-use binius_iop_prover::hachi_full_open_channel::HachiFullOpenProverChannel;
-#[cfg(feature = "hachi")]
-use binius_iop_prover::hachi_succinct_channel::HachiSuccinctProverChannel;
+#[cfg(feature = "akita")]
+use binius_akita_bridge::claim_reduced::AkitaClaimReducedSetup;
+#[cfg(feature = "akita")]
+use binius_akita_bridge::succinct::AkitaSuccinctSetup;
+#[cfg(feature = "akita")]
+use binius_akita_bridge_prover::claim_reduced::AkitaClaimReducedProverChannel;
+#[cfg(feature = "akita")]
+use binius_akita_bridge_prover::full_open::AkitaFullOpenProverChannel;
+#[cfg(feature = "akita")]
+use binius_akita_bridge_prover::succinct::AkitaSuccinctProverChannel;
 use binius_iop_prover::{
 	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
@@ -36,7 +40,7 @@ use binius_verifier::{
 	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
 use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
-#[cfg(feature = "hachi")]
+#[cfg(feature = "akita")]
 use std::sync::Arc;
 
 use super::error::Error;
@@ -54,10 +58,12 @@ use crate::{
 };
 
 const PROOF_MODE_BASEFOLD: &[u8] = b"binius64-proof-mode:basefold:v1";
-#[cfg(feature = "hachi")]
-const PROOF_MODE_HACHI_FULL_OPEN: &[u8] = b"binius64-proof-mode:hachi-full-open:v1";
-#[cfg(feature = "hachi")]
-const PROOF_MODE_HACHI_SUCCINCT: &[u8] = b"binius64-proof-mode:hachi-succinct:v1";
+#[cfg(feature = "akita")]
+const PROOF_MODE_AKITA_FULL_OPEN: &[u8] = b"binius64-proof-mode:akita-full-open:v1";
+#[cfg(feature = "akita")]
+const PROOF_MODE_AKITA_SUCCINCT: &[u8] = b"binius64-proof-mode:akita-succinct:v1";
+#[cfg(feature = "akita")]
+const PROOF_MODE_AKITA_CLAIM_REDUCED: &[u8] = b"binius64-proof-mode:akita-claim-reduced:v1";
 
 /// Type alias for the prover NTT parameterized by field.
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
@@ -305,8 +311,10 @@ where
 		ProverNTT<B128>,
 		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
 	>,
-	#[cfg(feature = "hachi")]
-	hachi_succinct_setup: Option<Arc<HachiSuccinctSetup>>,
+	#[cfg(feature = "akita")]
+	akita_succinct_setup: Option<Arc<AkitaSuccinctSetup>>,
+	#[cfg(feature = "akita")]
+	akita_claim_reduced_setup: Option<Arc<AkitaClaimReducedSetup>>,
 }
 
 impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
@@ -358,16 +366,20 @@ where
 			ntt,
 			merkle_prover,
 		);
-		#[cfg(feature = "hachi")]
-		let hachi_succinct_setup = verifier.hachi_succinct_setup();
+		#[cfg(feature = "akita")]
+		let akita_succinct_setup = verifier.akita_succinct_setup();
+		#[cfg(feature = "akita")]
+		let akita_claim_reduced_setup = verifier.akita_claim_reduced_setup();
 
 		let iop_prover = IOPProver::new(verifier.into_iop_verifier(), key_collection);
 
 		Ok(Prover {
 			iop_prover,
 			basefold_compiler,
-			#[cfg(feature = "hachi")]
-			hachi_succinct_setup,
+			#[cfg(feature = "akita")]
+			akita_succinct_setup,
+			#[cfg(feature = "akita")]
+			akita_claim_reduced_setup,
 		})
 	}
 
@@ -394,45 +406,77 @@ where
 		self.iop_prover.prove::<P, _>(witness, channel)
 	}
 
-	/// Proves using the Hachi full-opening bridge channel.
+	/// Proves using the Akita full-opening bridge channel.
 	///
 	/// This is a sound, non-succinct bridge path that reveals the terminal oracle
 	/// and verifies the batched parity bridge. It is intended as the first
-	/// end-to-end Hachi bridge target before replacing the full opening with a
-	/// succinct Hachi PCS opening/range proof.
-	#[cfg(feature = "hachi")]
-	pub fn prove_hachi_full_open<Challenger_: Challenger>(
+	/// end-to-end Akita bridge target before replacing the full opening with a
+	/// succinct Akita PCS opening/range proof.
+	#[cfg(feature = "akita")]
+	pub fn prove_akita_full_open<Challenger_: Challenger>(
 		&self,
 		witness: ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		transcript.message().write_bytes(PROOF_MODE_HACHI_FULL_OPEN);
-		let channel = HachiFullOpenProverChannel::new(
+		transcript.message().write_bytes(PROOF_MODE_AKITA_FULL_OPEN);
+		let channel = AkitaFullOpenProverChannel::new(
 			transcript,
 			self.basefold_compiler.oracle_specs().to_vec(),
 		);
 		self.iop_prover.prove::<P, _>(witness, channel)
 	}
 
-	/// Proves using the succinct Hachi bridge channel.
-	#[cfg(feature = "hachi")]
-	pub fn prove_hachi_succinct<Challenger_: Challenger>(
+	/// Proves using the succinct Akita bridge channel.
+	#[cfg(feature = "akita")]
+	pub fn prove_akita_succinct<Challenger_: Challenger>(
 		&self,
 		witness: ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		transcript.message().write_bytes(PROOF_MODE_HACHI_SUCCINCT);
-		let hachi_succinct_setup =
-			self.hachi_succinct_setup
+		transcript.message().write_bytes(PROOF_MODE_AKITA_SUCCINCT);
+		let akita_succinct_setup =
+			self.akita_succinct_setup
 				.as_deref()
 				.ok_or_else(|| Error::ArgumentError {
-					arg: "hachi-succinct".to_string(),
+					arg: "akita-succinct".to_string(),
 					msg: "requires witness oracles with at least 7 variables".to_string(),
 				})?;
-		let channel = HachiSuccinctProverChannel::new(
+		let channel = AkitaSuccinctProverChannel::new(
 			transcript,
 			self.basefold_compiler.oracle_specs().to_vec(),
-			hachi_succinct_setup,
+			akita_succinct_setup,
+		);
+		self.iop_prover.prove::<P, _>(witness, channel)
+	}
+
+	/// Proves using the claim-reduced Akita bridge channel.
+	///
+	/// A succinct-style Akita bridge variant that reduces the two opening
+	/// claims (at the selected-sum sumcheck point and the booleanity
+	/// sumcheck point) to a single claim via a degree-2 sumcheck, then
+	/// opens the committed polynomial at one point. Trades a small amount
+	/// of extra prover/verifier work and proof size in the sumcheck for a
+	/// simpler PCS opening surface that uses Akita's single-point opening
+	/// API. See `crates/iop/src/claim_reduced.rs` for the
+	/// design discussion.
+	#[cfg(feature = "akita")]
+	pub fn prove_akita_claim_reduced<Challenger_: Challenger>(
+		&self,
+		witness: ValueVec,
+		transcript: &mut ProverTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		transcript.message().write_bytes(PROOF_MODE_AKITA_CLAIM_REDUCED);
+		let akita_claim_reduced_setup = self
+			.akita_claim_reduced_setup
+			.as_deref()
+			.ok_or_else(|| Error::ArgumentError {
+				arg: "akita-claim-reduced".to_string(),
+				msg: "requires witness oracles with at least 7 variables".to_string(),
+			})?;
+		let channel = AkitaClaimReducedProverChannel::new(
+			transcript,
+			self.basefold_compiler.oracle_specs().to_vec(),
+			akita_claim_reduced_setup,
 		);
 		self.iop_prover.prove::<P, _>(witness, channel)
 	}

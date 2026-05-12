@@ -22,6 +22,9 @@
 //!
 //! - `binius_iop_prover` - Prover-side IOP implementations
 //! - `binius_verifier` - High-level verification that uses this crate
+//! - `binius_akita_bridge` - Verifier-side bridge from this crate's IOP layer
+//!   to the Akita lattice PCS (formerly inlined here under the `hachi`
+//!   feature; now a dedicated crate).
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
@@ -31,14 +34,6 @@ pub mod basefold_compiler;
 pub mod basefold_zk_channel;
 pub mod channel;
 pub mod fri;
-#[cfg(feature = "hachi")]
-pub mod hachi_bridge;
-#[cfg(feature = "hachi")]
-pub mod hachi_full_open_channel;
-#[cfg(feature = "hachi")]
-pub mod hachi_succinct_channel;
-#[cfg(feature = "hachi")]
-pub mod hachi_wire;
 pub mod merkle_tree;
 pub mod naive_channel;
 pub mod size_tracking_channel;

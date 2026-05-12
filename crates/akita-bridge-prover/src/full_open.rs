@@ -1,12 +1,10 @@
 // Copyright 2026 The Binius Developers
 
-//! Full-opening prover channel for the Hachi bridge prototype.
+//! Full-opening prover channel for the Akita bridge prototype.
 
+use binius_akita_bridge::protocol::{BINIUS_SCALAR_BITS, BiniusScalar, prove_terminal_linear_claim};
 use binius_field::PackedField;
-use binius_iop::{
-	channel::OracleSpec,
-	hachi_bridge::{BINIUS_SCALAR_BITS, BiniusScalar, prove_terminal_linear_claim},
-};
+use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, inner_product::inner_product_buffers};
 use binius_transcript::{
@@ -14,16 +12,16 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::channel::IOPProverChannel;
+use binius_iop_prover::channel::IOPProverChannel;
 
-/// Oracle handle returned by [`HachiFullOpenProverChannel::send_oracle`].
+/// Oracle handle returned by [`AkitaFullOpenProverChannel::send_oracle`].
 #[derive(Debug, Clone, Copy)]
-pub struct HachiFullOpenOracle {
+pub struct AkitaFullOpenOracle {
 	index: usize,
 }
 
 /// Prover channel that reveals oracle coefficients and sends a batched parity bridge witness.
-pub struct HachiFullOpenProverChannel<'a, Challenger_>
+pub struct AkitaFullOpenProverChannel<'a, Challenger_>
 where
 	Challenger_: Challenger,
 {
@@ -33,11 +31,11 @@ where
 	next_oracle_index: usize,
 }
 
-impl<'a, Challenger_> HachiFullOpenProverChannel<'a, Challenger_>
+impl<'a, Challenger_> AkitaFullOpenProverChannel<'a, Challenger_>
 where
 	Challenger_: Challenger,
 {
-	/// Creates a full-opening Hachi bridge prover channel.
+	/// Creates a full-opening Akita bridge prover channel.
 	pub fn new(
 		transcript: &'a mut ProverTranscript<Challenger_>,
 		oracle_specs: Vec<OracleSpec>,
@@ -51,7 +49,7 @@ where
 	}
 }
 
-impl<Challenger_> IPProverChannel<BiniusScalar> for HachiFullOpenProverChannel<'_, Challenger_>
+impl<Challenger_> IPProverChannel<BiniusScalar> for AkitaFullOpenProverChannel<'_, Challenger_>
 where
 	Challenger_: Challenger,
 {
@@ -76,12 +74,12 @@ where
 	}
 }
 
-impl<P, Challenger_> IOPProverChannel<P> for HachiFullOpenProverChannel<'_, Challenger_>
+impl<P, Challenger_> IOPProverChannel<P> for AkitaFullOpenProverChannel<'_, Challenger_>
 where
 	P: PackedField<Scalar = BiniusScalar>,
 	Challenger_: Challenger,
 {
-	type Oracle = HachiFullOpenOracle;
+	type Oracle = AkitaFullOpenOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -109,7 +107,7 @@ where
 		self.n_committed += 1;
 		self.next_oracle_index += 1;
 
-		HachiFullOpenOracle { index }
+		AkitaFullOpenOracle { index }
 	}
 
 	fn prove_oracle_relations(
@@ -151,7 +149,7 @@ where
 			let actual_eval: BiniusScalar = inner_product_buffers(&message, &transparent_poly);
 			debug_assert_eq!(
 				actual_eval, eval_claim,
-				"HachiFullOpenProverChannel: eval_claim mismatch for oracle {index}"
+				"AkitaFullOpenProverChannel: eval_claim mismatch for oracle {index}"
 			);
 		}
 	}
@@ -163,7 +161,7 @@ mod tests {
 	use binius_hash::StdDigest;
 	use binius_iop::{
 		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-		hachi_full_open_channel::HachiFullOpenVerifierChannel,
+		full_open::AkitaFullOpenVerifierChannel,
 	};
 	use binius_math::{
 		FieldBuffer,
@@ -180,7 +178,7 @@ mod tests {
 	type P = PackedBinaryGhash1x128b;
 
 	#[test]
-	fn hachi_full_open_channel_round_trip() {
+	fn akita_full_open_channel_round_trip() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let log_len = 5;
 		let oracle_specs = vec![OracleSpec {
@@ -193,13 +191,13 @@ mod tests {
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel =
-			HachiFullOpenProverChannel::new(&mut prover_transcript, oracle_specs.clone());
+			AkitaFullOpenProverChannel::new(&mut prover_transcript, oracle_specs.clone());
 		let oracle = prover_channel.send_oracle(message.to_ref());
 		prover_channel.prove_oracle_relations([(oracle, message, transparent.clone(), claim)]);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel =
-			HachiFullOpenVerifierChannel::<B128, _>::new(&mut verifier_transcript, &oracle_specs);
+			AkitaFullOpenVerifierChannel::<B128, _>::new(&mut verifier_transcript, &oracle_specs);
 		let oracle = verifier_channel.recv_oracle().unwrap();
 		verifier_channel
 			.verify_oracle_relations([OracleLinearRelation::new(
@@ -213,7 +211,7 @@ mod tests {
 
 	#[test]
 	#[should_panic]
-	fn hachi_full_open_channel_rejects_wrong_prover_claim_in_debug() {
+	fn akita_full_open_channel_rejects_wrong_prover_claim_in_debug() {
 		let mut rng = StdRng::seed_from_u64(1);
 		let log_len = 3;
 		let oracle_specs = vec![OracleSpec {
@@ -224,7 +222,7 @@ mod tests {
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel =
-			HachiFullOpenProverChannel::new(&mut prover_transcript, oracle_specs);
+			AkitaFullOpenProverChannel::new(&mut prover_transcript, oracle_specs);
 		let oracle = prover_channel.send_oracle(message.to_ref());
 		prover_channel.prove_oracle_relations([(oracle, message, transparent, B128::ONE)]);
 	}

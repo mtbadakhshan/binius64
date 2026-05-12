@@ -18,6 +18,8 @@ binius-transcript = { path = "../transcript" }
 binius-spartan-frontend = { path = "../spartan-frontend", default-features = false }
 binius-spartan-verifier = { path = "../spartan-verifier", default-features = false }
 binius-utils = { path = "../utils" }
+# Optional: Akita PCS bridge (verifier-side). Enabled via the `akita` feature.
+binius-akita-bridge = { path = "../akita-bridge", optional = true }
 bytemuck.workspace = true
 bytes.workspace = true
 digest.workspace = true
@@ -27,7 +29,9 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [features]
-hachi = ["binius-iop/hachi"]
+# `akita` enables the Akita lattice-PCS bridge in the verifier API
+# (`Verifier::verify_akita_{succinct,claim_reduced,full_open}`).
+akita = ["dep:binius-akita-bridge"]
 
 [dev-dependencies]
 binius-math = { path = "../math", features = ["test-utils"] }

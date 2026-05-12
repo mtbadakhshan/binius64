@@ -8,8 +8,8 @@ use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 
 use crate::{
-	CompressionType, ExampleCircuit, prove_verify, prove_verify_hachi_full_open,
-	prove_verify_hachi_succinct, setup_sha256, setup_vision4,
+	CompressionType, ExampleCircuit, prove_verify, prove_verify_akita_full_open,
+	prove_verify_akita_claim_reduced, prove_verify_akita_succinct, setup_sha256, setup_vision4,
 };
 
 /// Serialize a value implementing `SerializeBytes` and write it to the given path.
@@ -506,15 +506,20 @@ where
 				let (verifier, prover) = setup_vision4(cs, log_inv_rate as usize, None)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
-			CompressionType::HachiFullOpen => {
-				tracing::info!("Using Hachi full-opening bridge proof");
+			CompressionType::AkitaFullOpen => {
+				tracing::info!("Using Akita full-opening bridge proof");
 				let (verifier, prover) = setup_sha256(cs, log_inv_rate as usize, None)?;
-				prove_verify_hachi_full_open(&verifier, &prover, witness)?;
+				prove_verify_akita_full_open(&verifier, &prover, witness)?;
 			}
-			CompressionType::HachiSuccinct => {
-				tracing::info!("Using succinct Hachi bridge proof");
+			CompressionType::AkitaSuccinct => {
+				tracing::info!("Using succinct Akita bridge proof");
 				let (verifier, prover) = setup_sha256(cs, log_inv_rate as usize, None)?;
-				prove_verify_hachi_succinct(&verifier, &prover, witness)?;
+				prove_verify_akita_succinct(&verifier, &prover, witness)?;
+			}
+			CompressionType::AkitaClaimReduced => {
+				tracing::info!("Using claim-reduced Akita bridge proof");
+				let (verifier, prover) = setup_sha256(cs, log_inv_rate as usize, None)?;
+				prove_verify_akita_claim_reduced(&verifier, &prover, witness)?;
 			}
 		}
 
@@ -715,17 +720,23 @@ where
 					setup_vision4(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
-			CompressionType::HachiFullOpen => {
-				tracing::info!("Using Hachi full-opening bridge proof");
+			CompressionType::AkitaFullOpen => {
+				tracing::info!("Using Akita full-opening bridge proof");
 				let (verifier, prover) =
 					setup_sha256(cs, log_inv_rate as usize, maybe_key_collection)?;
-				prove_verify_hachi_full_open(&verifier, &prover, witness)?;
+				prove_verify_akita_full_open(&verifier, &prover, witness)?;
 			}
-			CompressionType::HachiSuccinct => {
-				tracing::info!("Using succinct Hachi bridge proof");
+			CompressionType::AkitaSuccinct => {
+				tracing::info!("Using succinct Akita bridge proof");
 				let (verifier, prover) =
 					setup_sha256(cs, log_inv_rate as usize, maybe_key_collection)?;
-				prove_verify_hachi_succinct(&verifier, &prover, witness)?;
+				prove_verify_akita_succinct(&verifier, &prover, witness)?;
+			}
+			CompressionType::AkitaClaimReduced => {
+				tracing::info!("Using claim-reduced Akita bridge proof");
+				let (verifier, prover) =
+					setup_sha256(cs, log_inv_rate as usize, maybe_key_collection)?;
+				prove_verify_akita_claim_reduced(&verifier, &prover, witness)?;
 			}
 		};
 

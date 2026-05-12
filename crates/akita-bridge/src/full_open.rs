@@ -1,11 +1,11 @@
 // Copyright 2026 The Binius Developers
 
-//! Full-opening verifier channel for the Hachi bridge prototype.
+//! Full-opening verifier channel for the Akita bridge prototype.
 //!
 //! This channel is deliberately conservative: the prover reveals the committed
 //! Binius oracle and the transparent polynomial, then also sends the batched
 //! parity bridge witness. The verifier checks the native Binius inner product
-//! directly and checks the bounded parity bridge over Hachi's prime field.
+//! directly and checks the bounded parity bridge over Akita's prime field.
 
 use binius_field::Field;
 use binius_ip::channel::IPVerifierChannel;
@@ -15,19 +15,18 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::{
-	channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-	hachi_bridge::{BINIUS_SCALAR_BITS, BatchedParityBridgeProof},
-};
+use binius_iop::channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 
-/// Oracle handle returned by [`HachiFullOpenVerifierChannel::recv_oracle`].
+use crate::protocol::{BINIUS_SCALAR_BITS, BatchedParityBridgeProof};
+
+/// Oracle handle returned by [`AkitaFullOpenVerifierChannel::recv_oracle`].
 #[derive(Debug, Clone, Copy)]
-pub struct HachiFullOpenOracle {
+pub struct AkitaFullOpenOracle {
 	index: usize,
 }
 
-/// Verifier channel that checks a full-opening Hachi bridge transcript.
-pub struct HachiFullOpenVerifierChannel<'a, F, Challenger_>
+/// Verifier channel that checks a full-opening Akita bridge transcript.
+pub struct AkitaFullOpenVerifierChannel<'a, F, Challenger_>
 where
 	F: Field,
 	Challenger_: Challenger,
@@ -38,7 +37,7 @@ where
 	next_oracle_index: usize,
 }
 
-impl<'a, F, Challenger_> HachiFullOpenVerifierChannel<'a, F, Challenger_>
+impl<'a, F, Challenger_> AkitaFullOpenVerifierChannel<'a, F, Challenger_>
 where
 	F: Field,
 	Challenger_: Challenger,
@@ -57,7 +56,7 @@ where
 	}
 }
 
-impl<F, Challenger_> IPVerifierChannel<F> for HachiFullOpenVerifierChannel<'_, F, Challenger_>
+impl<F, Challenger_> IPVerifierChannel<F> for AkitaFullOpenVerifierChannel<'_, F, Challenger_>
 where
 	F: Field,
 	Challenger_: Challenger,
@@ -112,12 +111,12 @@ where
 	}
 }
 
-impl<Challenger_> IOPVerifierChannel<crate::hachi_bridge::BiniusScalar>
-	for HachiFullOpenVerifierChannel<'_, crate::hachi_bridge::BiniusScalar, Challenger_>
+impl<Challenger_> IOPVerifierChannel<crate::protocol::BiniusScalar>
+	for AkitaFullOpenVerifierChannel<'_, crate::protocol::BiniusScalar, Challenger_>
 where
 	Challenger_: Challenger,
 {
-	type Oracle = HachiFullOpenOracle;
+	type Oracle = AkitaFullOpenOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -140,7 +139,7 @@ where
 		self.stored_polynomials
 			.push(FieldBuffer::from_values(&values));
 		self.next_oracle_index += 1;
-		Ok(HachiFullOpenOracle { index })
+		Ok(AkitaFullOpenOracle { index })
 	}
 
 	fn verify_oracle_relations<'a>(
@@ -161,7 +160,9 @@ where
 
 			let opened_sums = read_u64_array::<BINIUS_SCALAR_BITS, _>(self.transcript)?;
 			let bridge_proof = BatchedParityBridgeProof { opened_sums };
-			bridge_proof.verify(&transparent_values, relation.claim)?;
+			bridge_proof
+				.verify(&transparent_values, relation.claim)
+				.map_err(|_| Error::ProofEmpty)?;
 
 			let stored_poly = &self.stored_polynomials[index];
 			let actual_inner_product =

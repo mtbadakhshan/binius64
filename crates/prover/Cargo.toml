@@ -21,6 +21,9 @@ binius-spartan-verifier = { path = "../spartan-verifier" }
 binius-transcript = { path = "../transcript" }
 binius-verifier = { path = "../verifier" }
 binius-utils = { path = "../utils" }
+# Optional: Akita PCS bridge (prover-side). Enabled via the `akita` feature.
+binius-akita-bridge = { path = "../akita-bridge", optional = true }
+binius-akita-bridge-prover = { path = "../akita-bridge-prover", optional = true }
 bytemuck.workspace = true
 bytes.workspace = true
 derive_more.workspace = true
@@ -41,6 +44,7 @@ criterion.workspace = true
 proptest.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
 sha2.workspace = true
+sha3.workspace = true
 
 [lib]
 bench = false
@@ -91,5 +95,7 @@ harness = false
 
 [features]
 default = ["rayon"]
-hachi = ["binius-iop/hachi", "binius-iop-prover/hachi", "binius-verifier/hachi"]
+# `akita` enables the Akita lattice-PCS bridge in the prover API
+# (`Prover::prove_akita_{succinct,claim_reduced,full_open}`).
+akita = ["dep:binius-akita-bridge", "dep:binius-akita-bridge-prover", "binius-verifier/akita"]
 rayon = ["binius-utils/rayon"]

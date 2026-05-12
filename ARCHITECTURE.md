@@ -67,6 +67,7 @@ The use of binary field arithmetic and XOR-based linear combinations makes this 
 |-------|---------|
 | binius-ip | Interactive polynomial protocol structures (sumcheck, prodcheck) |
 | binius-iop | Interactive oracle protocol structures (BaseFold, FRI, Merkle trees) |
+| binius-akita-bridge | Verifier-side bridge from `binius-iop` to the Akita lattice PCS (optional; enabled via the `akita` feature in `binius-verifier` / `binius-prover`) |
 | binius-verifier | High-level Binius64 proof verification API |
 | binius-spartan-verifier | Iron Spartan proof verification |
 
@@ -76,6 +77,7 @@ The use of binary field arithmetic and XOR-based linear combinations makes this 
 |-------|---------|
 | binius-ip-prover | IP prover implementations |
 | binius-iop-prover | IOP prover implementations |
+| binius-akita-bridge-prover | Prover-side bridge to the Akita lattice PCS (optional; pairs with `binius-akita-bridge`) |
 | binius-prover | High-level Binius64 proof generation API |
 | binius-spartan-prover | Iron Spartan proof generation |
 

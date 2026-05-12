@@ -1,94 +1,104 @@
 // Copyright 2026 The Binius Developers
 
-//! Succinct Hachi bridge prover channel.
+//! Claim-reduced Akita bridge prover channel.
+//!
+//! Mirror of the verifier-side `binius_akita_bridge::claim_reduced`.
+//! See that module's docstring for the design discussion of the claim-
+//! reduction bridge vs the multi-point `akita-succinct` bridge.
+//!
+//! Most of this file is structurally identical to
+//! `succinct.rs`; blocks marked `// SHARED` are duplicated
+//! verbatim with the expectation that consolidation will happen once the
+//! two bridges' design has stabilized.
 
+use akita_config::proof_optimized::fp128;
+use akita_prover::{CommitmentProver, CommittedPolynomials, OneHotPoly, ProverClaims};
+use akita_scheme::AkitaCommitmentScheme;
+use akita_transcript::Blake2bTranscript;
+use akita_types::{AkitaBatchedProof, AkitaCommitmentHint, BasisMode, RingCommitment};
 use binius_field::PackedField;
-use binius_iop::{
-	channel::OracleSpec,
-	hachi_bridge::{
-		BINIUS_SCALAR_BITS, BatchedParityBridgeProof, BiniusScalar, BitSliceOracle, HachiScalar,
-		batched_selected_sum_table_mask, batched_u64_sum, parity_sum_bounds,
-		prove_product_sumcheck_transcript, prove_terminal_linear_claim,
-		prove_weighted_booleanity_sumcheck_transcript,
+use binius_akita_bridge::{
+	claim_reduced::{
+		AkitaClaimReducedProverSetup, AkitaClaimReducedSetup, pack_bounded_u64_array,
 	},
-	hachi_succinct_channel::{
-		HachiSuccinctProverSetup, HachiSuccinctSetup, pack_bounded_u64_array,
+	protocol::{
+		AkitaFieldScalar, BINIUS_SCALAR_BITS, BatchedParityBridgeProof, BiniusScalar,
+		BitSliceOracle, batched_selected_sum_table_mask, batched_u64_sum, parity_sum_bounds,
+		prove_claim_reduction_sumcheck_transcript, prove_product_sumcheck_transcript,
+		prove_terminal_linear_claim, prove_weighted_booleanity_sumcheck_transcript,
 	},
-	hachi_wire,
+	wire,
 };
+use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, inner_product::inner_product_buffers};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use hachi_pcs::{
-	BasisMode, CommitmentScheme, FromSmallInt, Transcript,
-	protocol::{
-		commitment::{RingCommitment, presets::fp128},
-		commitment_scheme::HachiCommitmentScheme,
-		hachi_poly_ops::OneHotPoly,
-		proof::{HachiBatchedCommitmentHint, HachiBatchedProof},
-	},
-};
 
-use crate::channel::IOPProverChannel;
+use binius_iop_prover::channel::IOPProverChannel;
 
 type Cfg = fp128::D64OneHot;
 const D: usize = 64;
-type Scheme = HachiCommitmentScheme<D, Cfg>;
-type Commitment = RingCommitment<HachiScalar, D>;
-type Hint = HachiBatchedCommitmentHint<HachiScalar, D>;
-type Setup = HachiSuccinctProverSetup;
-type BitTablePoly = OneHotPoly<HachiScalar, D, u8>;
+// Claim-reduced bridge opens the committed polynomial at exactly ONE point
+// (the claim-reduction sumcheck's final challenge), so the Akita opening
+// shape is `(num_claims=1, num_groups=1, num_points=1)`. The prover uses the
+// singleton `commit` API here, so no `AKITA_OPENING_POINTS` constant is
+// needed prover-side.
+type Scheme = AkitaCommitmentScheme<D, Cfg>;
+type Commitment = RingCommitment<AkitaFieldScalar, D>;
+type Hint = AkitaCommitmentHint<AkitaFieldScalar, D>;
+type Setup = AkitaClaimReducedProverSetup;
+type BitTablePoly = OneHotPoly<AkitaFieldScalar, D, u8>;
 
-/// Oracle handle returned by [`HachiSuccinctProverChannel::send_oracle`].
+/// Oracle handle returned by [`AkitaClaimReducedProverChannel::send_oracle`].
 #[derive(Debug, Clone, Copy)]
-pub struct HachiSuccinctOracle {
+pub struct AkitaClaimReducedOracle {
 	index: usize,
 }
 
 struct OracleData {
 	log_msg_len: usize,
-	bit_table: Vec<HachiScalar>,
+	bit_table: Vec<AkitaFieldScalar>,
 	poly: BitTablePoly,
 	commitment: Commitment,
 	hint: Hint,
 }
 
-/// Prover channel that commits to Binius oracle bits with Hachi.
-pub struct HachiSuccinctProverChannel<'a, Challenger_>
+/// Prover channel that commits to Binius oracle bits using the Akita lattice PCS.
+pub struct AkitaClaimReducedProverChannel<'a, Challenger_>
 where
 	Challenger_: Challenger,
 {
 	transcript: &'a mut ProverTranscript<Challenger_>,
 	oracle_specs: Vec<OracleSpec>,
-	hachi_setup: &'a HachiSuccinctSetup,
+	akita_setup: &'a AkitaClaimReducedSetup,
 	oracles: Vec<OracleData>,
 	next_oracle_index: usize,
 }
 
-impl<'a, Challenger_> HachiSuccinctProverChannel<'a, Challenger_>
+impl<'a, Challenger_> AkitaClaimReducedProverChannel<'a, Challenger_>
 where
 	Challenger_: Challenger,
 {
-	/// Creates a succinct Hachi bridge prover channel.
+	/// Creates a succinct Akita bridge prover channel.
 	pub fn new(
 		transcript: &'a mut ProverTranscript<Challenger_>,
 		oracle_specs: Vec<OracleSpec>,
-		hachi_setup: &'a HachiSuccinctSetup,
+		akita_setup: &'a AkitaClaimReducedSetup,
 	) -> Self {
 		Self {
 			transcript,
 			oracle_specs,
-			hachi_setup,
+			akita_setup,
 			oracles: Vec::new(),
 			next_oracle_index: 0,
 		}
 	}
 }
 
-impl<Challenger_> IPProverChannel<BiniusScalar> for HachiSuccinctProverChannel<'_, Challenger_>
+impl<Challenger_> IPProverChannel<BiniusScalar> for AkitaClaimReducedProverChannel<'_, Challenger_>
 where
 	Challenger_: Challenger,
 {
@@ -113,12 +123,12 @@ where
 	}
 }
 
-impl<P, Challenger_> IOPProverChannel<P> for HachiSuccinctProverChannel<'_, Challenger_>
+impl<P, Challenger_> IOPProverChannel<P> for AkitaClaimReducedProverChannel<'_, Challenger_>
 where
 	P: PackedField<Scalar = BiniusScalar>,
 	Challenger_: Challenger,
 {
-	type Oracle = HachiSuccinctOracle;
+	type Oracle = AkitaClaimReducedOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -130,27 +140,34 @@ where
 		assert_eq!(buffer.log_len(), spec.log_msg_len);
 		assert!(
 			spec.log_msg_len >= 7,
-			"hachi-succinct currently uses D={D} and requires at least 7 variables"
+			"akita-succinct currently uses D={D} and requires at least 7 variables"
 		);
 
 		let oracle_values = buffer.iter_scalars().collect::<Vec<_>>();
-		let oracle_setup = self.hachi_setup.oracle_setup(index);
+		let oracle_setup = self.akita_setup.oracle_setup(index);
 		assert_eq!(spec.log_msg_len, oracle_setup.log_msg_len());
 		let bit_slices = BitSliceOracle::from_binius_oracle(&oracle_values);
 		let bit_table = bit_slices.to_bit_table_evals();
-		// OneHotPoly is only the honest-prover representation used to speed up Hachi
+		// OneHotPoly is only the honest-prover representation used to speed up Akita
 		// operations. The verifier-side Booleanity guarantee is the weighted
 		// sumcheck in prove_oracle_relations/verify_oracle_relations.
 		let poly = bit_slices
 			.to_onehot_bit_table_poly::<D>()
 			.expect("bit table one-hot encoding is valid");
 
-		let (commitment, hint) = <Scheme as CommitmentScheme<HachiScalar, D>>::commit(
+		// Claim-reduced bridge: open at exactly ONE point (the claim-reduction
+		// sumcheck's final challenge), so the singleton `commit` API
+		// suffices. The `(num_claims=1, num_groups=1, num_points=1)`
+		// schedule the prover later derives matches what `commit`'s default
+		// policy selected at commit time, so no custom layout policy is
+		// needed here. The multi-point variant in `succinct`
+		// uses `commit_with_policy` instead for that reason.
+		let (commitment, hint) = <Scheme as CommitmentProver<AkitaFieldScalar, D>>::commit(
 			std::slice::from_ref(&poly),
 			oracle_setup.prover_setup(),
 		)
-		.expect("Hachi bit-table commit should succeed");
-		hachi_wire::write_hachi(self.transcript, &commitment);
+		.expect("Akita bit-table commit should succeed");
+		wire::write_akita(self.transcript, &commitment);
 
 		self.oracles.push(OracleData {
 			log_msg_len: spec.log_msg_len,
@@ -160,7 +177,7 @@ where
 			hint,
 		});
 		self.next_oracle_index += 1;
-		HachiSuccinctOracle { index }
+		AkitaClaimReducedOracle { index }
 	}
 
 	fn prove_oracle_relations(
@@ -171,7 +188,7 @@ where
 	) {
 		for (oracle, message, transparent_poly, eval_claim) in oracle_relations {
 			let data = &self.oracles[oracle.index];
-			let oracle_setup = self.hachi_setup.oracle_setup(oracle.index);
+			let oracle_setup = self.akita_setup.oracle_setup(oracle.index);
 			assert_eq!(message.log_len(), data.log_msg_len);
 			let oracle_values = message.iter_scalars().collect::<Vec<_>>();
 			let transparent_values = transparent_poly.iter_scalars().collect::<Vec<_>>();
@@ -182,7 +199,7 @@ where
 			let sum_bounds = parity_sum_bounds(&transparent_values).unwrap();
 			write_parity(self.transcript, &parity, &sum_bounds);
 
-			let alpha = hachi_wire::sample_hachi_scalar(self.transcript);
+			let alpha = wire::sample_akita_scalar(self.transcript);
 
 			let selected_mask = batched_selected_sum_table_mask(&transparent_values, alpha);
 			let selected_initial = batched_u64_sum(&parity.opened_sums, alpha);
@@ -196,7 +213,7 @@ where
 			debug_assert_eq!(selected_claim, selected_initial);
 
 			let bool_weight_point =
-				hachi_wire::sample_hachi_scalar_vec(self.transcript, data.log_msg_len + 7);
+				wire::sample_akita_scalar_vec(self.transcript, data.log_msg_len + 7);
 			let (bool_claim, _bool_proof, bool_point, bool_opening) =
 				prove_weighted_booleanity_sumcheck_transcript(
 					&data.bit_table,
@@ -204,20 +221,49 @@ where
 					self.transcript,
 				)
 				.unwrap();
-			debug_assert_eq!(bool_claim, HachiScalar::from_u64(0));
+			debug_assert_eq!(bool_claim, AkitaFieldScalar::from_u64(0));
 
 			for value in &selected_openings {
-				hachi_wire::write_hachi(self.transcript, value);
+				wire::write_akita(self.transcript, value);
 			}
-			hachi_wire::write_hachi(self.transcript, &bool_opening);
+			wire::write_akita(self.transcript, &bool_opening);
 
-			let proof = prove_hachi_openings(
+			// === Claim-reduced bridge: run claim reduction sumcheck, then
+			//     open the committed polynomial at the single reduced point. ===
+			//
+			// The bit-table has `log_msg_len + 7` variables (= 2^log_msg_len
+			// packed B128 elements × 128 bits each). The selected/bool
+			// sumchecks produce points of length `log_msg_len + 7` whose
+			// evaluations of the bit-table give us `selected_openings[0]`
+			// and `bool_opening`. Claim reduction sumcheck operates on the
+			// bit-table at these two points, producing a fresh `reduced_point`
+			// also of length `log_msg_len + 7`.
+			//
+			// The committed PCS object is a OneHotPoly with one extra leading
+			// dimension (log_msg_len + 8 vars total) addressing the one-hot
+			// {bit, 1-bit} pair. To open the OneHotPoly at the bit-table's
+			// `reduced_point`, we prefix a `1` coordinate so the opening
+			// selects the bit-valued half of the one-hot encoding (which
+			// equals the bit-table at `reduced_point`).
+			let (_cr_alpha, _cr_proof, reduced_point, b_final) =
+				prove_claim_reduction_sumcheck_transcript(
+					&data.bit_table,
+					&selected_point,
+					&bool_point,
+					selected_openings[0],
+					bool_opening,
+					self.transcript,
+				)
+				.expect("claim reduction sumcheck should succeed");
+
+			let extended_reduced_point = with_one_coordinate(&reduced_point);
+			let proof = prove_akita_claim_reduced_opening(
 				data,
 				oracle_setup.prover_setup(),
-				&with_one_coordinate(&selected_point),
-				&with_one_coordinate(&bool_point),
+				&extended_reduced_point,
+				b_final,
 			);
-			hachi_wire::write_hachi(self.transcript, &proof);
+			wire::write_akita(self.transcript, &proof);
 
 			let _point: Vec<BiniusScalar> =
 				CanSample::sample_vec(&mut self.transcript, data.log_msg_len);
@@ -227,9 +273,9 @@ where
 	}
 }
 
-fn with_one_coordinate(point: &[HachiScalar]) -> Vec<HachiScalar> {
+fn with_one_coordinate(point: &[AkitaFieldScalar]) -> Vec<AkitaFieldScalar> {
 	let mut extended = Vec::with_capacity(point.len() + 1);
-	extended.push(HachiScalar::from_u64(1));
+	extended.push(AkitaFieldScalar::from_u64(1));
 	extended.extend_from_slice(point);
 	extended
 }
@@ -256,44 +302,50 @@ fn write_bounded_u64_array<Challenger_>(
 	transcript.message().write_bytes(&packed);
 }
 
-fn prove_hachi_openings(
+/// Single-point opening for the claim-reduced bridge.
+///
+/// After the claim-reduction sumcheck, the prover has a single residual
+/// claim `B(reduced_point) = b_eval` and calls Akita's `batched_prove`
+/// with a `ProverClaims` of shape `(1 point, 1 group, 1 claim)`. The
+/// `_b_eval` parameter is unused by `batched_prove` directly (Akita derives
+/// the eval from the polynomial itself), but is accepted in the signature
+/// to mirror the verifier-side `verify_akita_claim_reduced_opening` and to
+/// allow honest-prover sanity assertions in future debug builds.
+fn prove_akita_claim_reduced_opening(
 	data: &OracleData,
 	setup: &Setup,
-	selected_point: &[HachiScalar],
-	bool_point: &[HachiScalar],
-) -> HachiBatchedProof<HachiScalar> {
-	let poly_refs = [&data.poly];
-	let poly_groups = [&poly_refs[..]];
-	let hints_by_point = vec![vec![data.hint.clone()], vec![data.hint.clone()]];
-	let selected_commitments = [data.commitment.clone()];
-	let bool_commitments = [data.commitment.clone()];
-	let commitments_by_point = [&selected_commitments[..], &bool_commitments[..]];
-	let poly_groups_by_point = [&poly_groups[..], &poly_groups[..]];
-	let opening_points = [selected_point, bool_point];
-	let mut transcript = hachi_pcs::protocol::transcript::Blake2bTranscript::<HachiScalar>::new(
-		b"binius/hachi-succinct/openings",
+	reduced_point: &[AkitaFieldScalar],
+	_b_eval: AkitaFieldScalar,
+) -> AkitaBatchedProof<AkitaFieldScalar> {
+	let mut transcript = Blake2bTranscript::<AkitaFieldScalar>::new(
+		b"binius/akita-claim-reduced/openings",
 	);
-	<Scheme as CommitmentScheme<HachiScalar, D>>::batched_prove(
+	// Single opening point — no multi-point batching, no commit/poly
+	// duplication required. The simplest `ProverClaims` shape.
+	let poly_refs: [&BitTablePoly; 1] = [&data.poly];
+	let claims: ProverClaims<AkitaFieldScalar, &BitTablePoly, Commitment, Hint> = vec![(
+		reduced_point,
+		vec![CommittedPolynomials {
+			polynomials: &poly_refs,
+			commitment: &data.commitment,
+			hint: data.hint.clone(),
+		}],
+	)];
+	<Scheme as CommitmentProver<AkitaFieldScalar, D>>::batched_prove(
 		setup,
-		&poly_groups_by_point,
-		&opening_points,
-		hints_by_point,
+		claims,
 		&mut transcript,
-		&commitments_by_point,
 		BasisMode::Lagrange,
 	)
-	.expect("Hachi batched opening proof should succeed")
+	.expect("Akita single-point opening proof should succeed")
 }
 
 #[cfg(test)]
 mod tests {
+	use binius_akita_bridge::succinct::AkitaSuccinctVerifierChannel;
 	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash1x128b};
 	use binius_hash::StdDigest;
-	use binius_iop::{
-		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-		hachi_bridge::ConstantTransparentRelation,
-		hachi_succinct_channel::HachiSuccinctVerifierChannel,
-	};
+	use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 	use binius_math::{
 		FieldBuffer, inner_product::inner_product_buffers, test_utils::random_field_buffer,
 	};
@@ -306,35 +358,34 @@ mod tests {
 	type P = PackedBinaryGhash1x128b;
 
 	#[test]
-	fn hachi_succinct_verifier_accepts_structured_constant_relation() {
+	fn akita_succinct_verifier_accepts_structured_constant_relation() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let log_len = 7;
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: log_len,
 		}];
-		let hachi_setup = HachiSuccinctSetup::new(&oracle_specs);
+		let akita_setup = AkitaClaimReducedSetup::new(&oracle_specs);
 		let message = random_field_buffer::<P>(&mut rng, log_len);
 		let coefficient = B128::new(0x0101_0203_0508_0d15_2237_5990_e979_62db);
 		let transparent = FieldBuffer::<P>::from_values(&vec![coefficient; 1 << log_len]);
 		let claim = inner_product_buffers(&message, &transparent);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let mut prover_channel = HachiSuccinctProverChannel::new(
+		let mut prover_channel = AkitaClaimReducedProverChannel::new(
 			&mut prover_transcript,
 			oracle_specs.clone(),
-			&hachi_setup,
+			&akita_setup,
 		);
 		let oracle = prover_channel.send_oracle(message.to_ref());
 		prover_channel.prove_oracle_relations([(oracle, message, transparent, claim)]);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = HachiSuccinctVerifierChannel::new(
+		let mut verifier_channel = AkitaSuccinctVerifierChannel::new(
 			&mut verifier_transcript,
 			&oracle_specs,
-			&hachi_setup,
+			&akita_setup,
 		);
 		let oracle = verifier_channel.recv_oracle().unwrap();
-		let structured_relation = ConstantTransparentRelation::new(log_len, coefficient);
 		verifier_channel
 			.verify_oracle_relations([OracleLinearRelation::new(
 				oracle,
@@ -343,43 +394,41 @@ mod tests {
 					coefficient
 				}),
 				claim,
-			)
-			.with_hachi_structured_transparent(structured_relation)])
+			)])
 			.unwrap();
 		verifier_transcript.finalize().unwrap();
 	}
 
 	#[test]
-	fn hachi_succinct_verifier_rejects_wrong_structured_relation() {
+	fn akita_succinct_verifier_rejects_wrong_structured_relation() {
 		let mut rng = StdRng::seed_from_u64(1);
 		let log_len = 7;
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: log_len,
 		}];
-		let hachi_setup = HachiSuccinctSetup::new(&oracle_specs);
+		let akita_setup = AkitaClaimReducedSetup::new(&oracle_specs);
 		let message = random_field_buffer::<P>(&mut rng, log_len);
 		let coefficient = B128::new(0x0101_0203_0508_0d15_2237_5990_e979_62db);
 		let transparent = FieldBuffer::<P>::from_values(&vec![coefficient; 1 << log_len]);
 		let claim = inner_product_buffers(&message, &transparent);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let mut prover_channel = HachiSuccinctProverChannel::new(
+		let mut prover_channel = AkitaClaimReducedProverChannel::new(
 			&mut prover_transcript,
 			oracle_specs.clone(),
-			&hachi_setup,
+			&akita_setup,
 		);
 		let oracle = prover_channel.send_oracle(message.to_ref());
 		prover_channel.prove_oracle_relations([(oracle, message, transparent, claim)]);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = HachiSuccinctVerifierChannel::new(
+		let mut verifier_channel = AkitaSuccinctVerifierChannel::new(
 			&mut verifier_transcript,
 			&oracle_specs,
-			&hachi_setup,
+			&akita_setup,
 		);
 		let oracle = verifier_channel.recv_oracle().unwrap();
 		let wrong_coefficient = coefficient + B128::new(1);
-		let wrong_relation = ConstantTransparentRelation::new(log_len, wrong_coefficient);
 		assert!(
 			verifier_channel
 				.verify_oracle_relations([OracleLinearRelation::new(
@@ -389,8 +438,7 @@ mod tests {
 						wrong_coefficient
 					}),
 					claim,
-				)
-				.with_hachi_structured_transparent(wrong_relation)])
+				)])
 				.is_err()
 		);
 	}

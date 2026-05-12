@@ -1,0 +1,36 @@
+[package]
+name = "binius-akita-bridge-prover"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# Prover-side IOP→Akita-PCS bridge.
+#
+# Hosts prover channels for the three opening variants (full-open, succinct,
+# claim-reduced). Shared protocol primitives and verifier channels live in
+# `binius-akita-bridge`.
+
+[dependencies]
+binius-akita-bridge = { path = "../akita-bridge" }
+binius-field = { path = "../field" }
+binius-iop = { path = "../iop" }
+binius-iop-prover = { path = "../iop-prover", default-features = false }
+binius-ip-prover = { path = "../ip-prover", default-features = false }
+binius-math = { path = "../math" }
+binius-transcript = { path = "../transcript" }
+
+# Upstream Akita PCS deps
+akita-config = { path = "../../../lz-hachi/crates/akita-config", default-features = false, features = ["planner"] }
+akita-prover = { path = "../../../lz-hachi/crates/akita-prover", default-features = false }
+akita-scheme = { path = "../../../lz-hachi/crates/akita-scheme", default-features = false }
+akita-transcript = { path = "../../../lz-hachi/crates/akita-transcript", default-features = false }
+akita-types = { path = "../../../lz-hachi/crates/akita-types", default-features = false }
+
+[dev-dependencies]
+binius-math = { path = "../math", features = ["test-utils"] }
+binius-transcript = { path = "../transcript" }
+rand.workspace = true
+sha2.workspace = true

@@ -32,10 +32,12 @@ pub enum CompressionType {
 	Sha256,
 	/// Vision 4-element compression function
 	Vision4,
-	/// Hachi full-opening bridge proof system (experimental, non-succinct)
-	HachiFullOpen,
-	/// Succinct Hachi bridge proof system
-	HachiSuccinct,
+	/// Akita full-opening bridge proof system (experimental, non-succinct)
+	AkitaFullOpen,
+	/// Succinct Akita bridge proof system
+	AkitaSuccinct,
+	/// Claim-reduced Akita bridge: reduces multi-point opening to single-point via sumcheck
+	AkitaClaimReduced,
 }
 
 /// Standard verifier using SHA256 compression
@@ -112,9 +114,9 @@ where
 	Ok(())
 }
 
-/// Generate and verify a proof using the Hachi full-opening bridge channel.
-#[cfg(feature = "hachi")]
-pub fn prove_verify_hachi_full_open<D, C, ParD, ParC>(
+/// Generate and verify a proof using the Akita full-opening bridge channel.
+#[cfg(feature = "akita")]
+pub fn prove_verify_akita_full_open<D, C, ParD, ParC>(
 	verifier: &Verifier<D, C>,
 	prover: &Prover<OptimalPackedB128, ParC, ParD>,
 	witness: ValueVec,
@@ -128,21 +130,21 @@ where
 	let challenger = StdChallenger::default();
 
 	let mut prover_transcript = ProverTranscript::new(challenger.clone());
-	prover.prove_hachi_full_open(witness.clone(), &mut prover_transcript)?;
+	prover.prove_akita_full_open(witness.clone(), &mut prover_transcript)?;
 
 	let proof = prover_transcript.finalize();
-	tracing::info!("Hachi full-open proof size: {} KiB", proof.len() / 1024);
+	tracing::info!("Akita full-open proof size: {} KiB", proof.len() / 1024);
 
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
-	verifier.verify_hachi_full_open(witness.public(), &mut verifier_transcript)?;
+	verifier.verify_akita_full_open(witness.public(), &mut verifier_transcript)?;
 	verifier_transcript.finalize()?;
 
 	Ok(())
 }
 
-/// Generate and verify a proof using the succinct Hachi bridge channel.
-#[cfg(feature = "hachi")]
-pub fn prove_verify_hachi_succinct<D, C, ParD, ParC>(
+/// Generate and verify a proof using the succinct Akita bridge channel.
+#[cfg(feature = "akita")]
+pub fn prove_verify_akita_succinct<D, C, ParD, ParC>(
 	verifier: &Verifier<D, C>,
 	prover: &Prover<OptimalPackedB128, ParC, ParD>,
 	witness: ValueVec,
@@ -156,21 +158,21 @@ where
 	let challenger = StdChallenger::default();
 
 	let mut prover_transcript = ProverTranscript::new(challenger.clone());
-	prover.prove_hachi_succinct(witness.clone(), &mut prover_transcript)?;
+	prover.prove_akita_succinct(witness.clone(), &mut prover_transcript)?;
 
 	let proof = prover_transcript.finalize();
-	tracing::info!("Hachi succinct proof size: {} KiB", proof.len() / 1024);
+	tracing::info!("Akita succinct proof size: {} KiB", proof.len() / 1024);
 
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
-	verifier.verify_hachi_succinct(witness.public(), &mut verifier_transcript)?;
+	verifier.verify_akita_succinct(witness.public(), &mut verifier_transcript)?;
 	verifier_transcript.finalize()?;
 
 	Ok(())
 }
 
-/// Stub for builds without the `hachi` feature.
-#[cfg(not(feature = "hachi"))]
-pub fn prove_verify_hachi_succinct<D, C, ParD, ParC>(
+/// Stub for builds without the `akita` feature.
+#[cfg(not(feature = "akita"))]
+pub fn prove_verify_akita_succinct<D, C, ParD, ParC>(
 	_verifier: &Verifier<D, C>,
 	_prover: &Prover<OptimalPackedB128, ParC, ParD>,
 	_witness: ValueVec,
@@ -181,12 +183,43 @@ where
 	ParD: ParallelDigest<Digest = D>,
 	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
 {
-	anyhow::bail!("hachi succinct proofs require building binius-examples with --features hachi")
+	anyhow::bail!("akita succinct proofs require building binius-examples with --features akita")
 }
 
-/// Stub for builds without the `hachi` feature.
-#[cfg(not(feature = "hachi"))]
-pub fn prove_verify_hachi_full_open<D, C, ParD, ParC>(
+/// Generate and verify a proof using the claim-reduced Akita bridge channel.
+#[cfg(feature = "akita")]
+pub fn prove_verify_akita_claim_reduced<D, C, ParD, ParC>(
+	verifier: &Verifier<D, C>,
+	prover: &Prover<OptimalPackedB128, ParC, ParD>,
+	witness: ValueVec,
+) -> Result<()>
+where
+	D: Digest + BlockSizeUser + FixedOutputReset,
+	C: PseudoCompressionFunction<Output<D>, 2>,
+	ParD: ParallelDigest<Digest = D>,
+	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+{
+	let challenger = StdChallenger::default();
+
+	let mut prover_transcript = ProverTranscript::new(challenger.clone());
+	prover.prove_akita_claim_reduced(witness.clone(), &mut prover_transcript)?;
+
+	let proof = prover_transcript.finalize();
+	tracing::info!(
+		"Akita claim-reduced proof size: {} KiB",
+		proof.len() / 1024
+	);
+
+	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
+	verifier.verify_akita_claim_reduced(witness.public(), &mut verifier_transcript)?;
+	verifier_transcript.finalize()?;
+
+	Ok(())
+}
+
+/// Stub for builds without the `akita` feature.
+#[cfg(not(feature = "akita"))]
+pub fn prove_verify_akita_claim_reduced<D, C, ParD, ParC>(
 	_verifier: &Verifier<D, C>,
 	_prover: &Prover<OptimalPackedB128, ParC, ParD>,
 	_witness: ValueVec,
@@ -197,7 +230,25 @@ where
 	ParD: ParallelDigest<Digest = D>,
 	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
 {
-	anyhow::bail!("hachi full-open proofs require building binius-examples with --features hachi")
+	anyhow::bail!(
+		"akita claim-reduced proofs require building binius-examples with --features akita"
+	)
+}
+
+/// Stub for builds without the `akita` feature.
+#[cfg(not(feature = "akita"))]
+pub fn prove_verify_akita_full_open<D, C, ParD, ParC>(
+	_verifier: &Verifier<D, C>,
+	_prover: &Prover<OptimalPackedB128, ParC, ParD>,
+	_witness: ValueVec,
+) -> Result<()>
+where
+	D: Digest + BlockSizeUser + FixedOutputReset,
+	C: PseudoCompressionFunction<Output<D>, 2>,
+	ParD: ParallelDigest<Digest = D>,
+	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+{
+	anyhow::bail!("akita full-open proofs require building binius-examples with --features akita")
 }
 
 /// Trait for standardizing circuit examples in the Binius framework.

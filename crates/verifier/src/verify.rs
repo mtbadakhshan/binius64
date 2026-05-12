@@ -2,10 +2,13 @@
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
-#[cfg(feature = "hachi")]
-use binius_iop::hachi_full_open_channel::HachiFullOpenVerifierChannel;
-#[cfg(feature = "hachi")]
-use binius_iop::hachi_succinct_channel::{HachiSuccinctSetup, HachiSuccinctVerifierChannel};
+#[cfg(feature = "akita")]
+use binius_akita_bridge::full_open::AkitaFullOpenVerifierChannel;
+#[cfg(feature = "akita")]
+use binius_akita_bridge::claim_reduced::{
+	AkitaClaimReducedSetup, AkitaClaimReducedVerifierChannel,
+};
+use binius_akita_bridge::succinct::{AkitaSuccinctSetup, AkitaSuccinctVerifierChannel};
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -24,7 +27,7 @@ use binius_utils::{
 };
 use digest::{Digest, Output, block_api::BlockSizeUser};
 use itertools::chain;
-#[cfg(feature = "hachi")]
+#[cfg(feature = "akita")]
 use std::sync::Arc;
 
 use super::error::Error;
@@ -45,10 +48,12 @@ use crate::{
 };
 
 const PROOF_MODE_BASEFOLD: &[u8] = b"binius64-proof-mode:basefold:v1";
-#[cfg(feature = "hachi")]
-const PROOF_MODE_HACHI_FULL_OPEN: &[u8] = b"binius64-proof-mode:hachi-full-open:v1";
-#[cfg(feature = "hachi")]
-const PROOF_MODE_HACHI_SUCCINCT: &[u8] = b"binius64-proof-mode:hachi-succinct:v1";
+#[cfg(feature = "akita")]
+const PROOF_MODE_AKITA_FULL_OPEN: &[u8] = b"binius64-proof-mode:akita-full-open:v1";
+#[cfg(feature = "akita")]
+const PROOF_MODE_AKITA_SUCCINCT: &[u8] = b"binius64-proof-mode:akita-succinct:v1";
+#[cfg(feature = "akita")]
+const PROOF_MODE_AKITA_CLAIM_REDUCED: &[u8] = b"binius64-proof-mode:akita-claim-reduced:v1";
 
 pub const SECURITY_BITS: usize = 96;
 
@@ -291,8 +296,10 @@ where
 	iop_verifier: IOPVerifier,
 	iop_compiler:
 		BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
-	#[cfg(feature = "hachi")]
-	hachi_succinct_setup: Option<Arc<HachiSuccinctSetup>>,
+	#[cfg(feature = "akita")]
+	akita_succinct_setup: Option<Arc<AkitaSuccinctSetup>>,
+	#[cfg(feature = "akita")]
+	akita_claim_reduced_setup: Option<Arc<AkitaClaimReducedSetup>>,
 }
 
 impl<MerkleHash, MerkleCompress> Verifier<MerkleHash, MerkleCompress>
@@ -338,15 +345,21 @@ where
 			n_test_queries,
 			&ConstantArityStrategy::new(fri_arity),
 		);
-		#[cfg(feature = "hachi")]
-		let hachi_succinct_setup = HachiSuccinctSetup::supports(iop_compiler.oracle_specs())
-			.then(|| Arc::new(HachiSuccinctSetup::new(iop_compiler.oracle_specs())));
+		#[cfg(feature = "akita")]
+		let akita_succinct_setup = AkitaSuccinctSetup::supports(iop_compiler.oracle_specs())
+			.then(|| Arc::new(AkitaSuccinctSetup::new(iop_compiler.oracle_specs())));
+		#[cfg(feature = "akita")]
+		let akita_claim_reduced_setup =
+			AkitaClaimReducedSetup::supports(iop_compiler.oracle_specs())
+				.then(|| Arc::new(AkitaClaimReducedSetup::new(iop_compiler.oracle_specs())));
 
 		Ok(Self {
 			iop_verifier,
 			iop_compiler,
-			#[cfg(feature = "hachi")]
-			hachi_succinct_setup,
+			#[cfg(feature = "akita")]
+			akita_succinct_setup,
+			#[cfg(feature = "akita")]
+			akita_claim_reduced_setup,
 		})
 	}
 
@@ -399,10 +412,10 @@ where
 		&self.iop_compiler
 	}
 
-	/// Returns the reusable setup for the succinct Hachi bridge channel.
-	#[cfg(feature = "hachi")]
-	pub fn hachi_succinct_setup(&self) -> Option<Arc<HachiSuccinctSetup>> {
-		self.hachi_succinct_setup.as_ref().map(Arc::clone)
+	/// Returns the reusable setup for the succinct Akita bridge channel.
+	#[cfg(feature = "akita")]
+	pub fn akita_succinct_setup(&self) -> Option<Arc<AkitaSuccinctSetup>> {
+		self.akita_succinct_setup.as_ref().map(Arc::clone)
 	}
 
 	pub fn verify<Challenger_: Challenger>(
@@ -416,36 +429,65 @@ where
 		self.iop_verifier.verify(public, &mut channel)
 	}
 
-	/// Verifies a proof produced by the Hachi full-opening bridge channel.
-	#[cfg(feature = "hachi")]
-	pub fn verify_hachi_full_open<Challenger_: Challenger>(
+	/// Verifies a proof produced by the Akita full-opening bridge channel.
+	#[cfg(feature = "akita")]
+	pub fn verify_akita_full_open<Challenger_: Challenger>(
 		&self,
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		read_proof_mode(transcript, PROOF_MODE_HACHI_FULL_OPEN)?;
+		read_proof_mode(transcript, PROOF_MODE_AKITA_FULL_OPEN)?;
 		let mut channel =
-			HachiFullOpenVerifierChannel::new(transcript, self.iop_compiler.oracle_specs());
+			AkitaFullOpenVerifierChannel::new(transcript, self.iop_compiler.oracle_specs());
 		self.iop_verifier.verify(public, &mut channel)
 	}
 
-	/// Verifies a proof produced by the succinct Hachi bridge channel.
-	#[cfg(feature = "hachi")]
-	pub fn verify_hachi_succinct<Challenger_: Challenger>(
+	/// Verifies a proof produced by the succinct Akita bridge channel.
+	#[cfg(feature = "akita")]
+	pub fn verify_akita_succinct<Challenger_: Challenger>(
 		&self,
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		read_proof_mode(transcript, PROOF_MODE_HACHI_SUCCINCT)?;
-		let hachi_succinct_setup = self.hachi_succinct_setup.as_deref().ok_or_else(|| {
+		read_proof_mode(transcript, PROOF_MODE_AKITA_SUCCINCT)?;
+		let akita_succinct_setup = self.akita_succinct_setup.as_deref().ok_or_else(|| {
 			Error::Unsupported(
-				"hachi-succinct requires witness oracles with at least 7 variables".to_string(),
+				"akita-succinct requires witness oracles with at least 7 variables".to_string(),
 			)
 		})?;
-		let mut channel = HachiSuccinctVerifierChannel::new(
+		let mut channel = AkitaSuccinctVerifierChannel::new(
 			transcript,
 			self.iop_compiler.oracle_specs(),
-			hachi_succinct_setup,
+			akita_succinct_setup,
+		);
+		self.iop_verifier.verify(public, &mut channel)
+	}
+
+	/// Returns the reusable setup for the claim-reduced Akita bridge channel.
+	#[cfg(feature = "akita")]
+	pub fn akita_claim_reduced_setup(&self) -> Option<Arc<AkitaClaimReducedSetup>> {
+		self.akita_claim_reduced_setup.as_ref().map(Arc::clone)
+	}
+
+	/// Verifies a proof produced by the claim-reduced Akita bridge channel.
+	#[cfg(feature = "akita")]
+	pub fn verify_akita_claim_reduced<Challenger_: Challenger>(
+		&self,
+		public: &[Word],
+		transcript: &mut VerifierTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		read_proof_mode(transcript, PROOF_MODE_AKITA_CLAIM_REDUCED)?;
+		let akita_claim_reduced_setup =
+			self.akita_claim_reduced_setup.as_deref().ok_or_else(|| {
+				Error::Unsupported(
+					"akita-claim-reduced requires witness oracles with at least 7 variables"
+						.to_string(),
+				)
+			})?;
+		let mut channel = AkitaClaimReducedVerifierChannel::new(
+			transcript,
+			self.iop_compiler.oracle_specs(),
+			akita_claim_reduced_setup,
 		);
 		self.iop_verifier.verify(public, &mut channel)
 	}

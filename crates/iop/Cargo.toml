@@ -17,13 +17,9 @@ binius-utils = { path = "../utils" }
 bytes.workspace = true
 digest.workspace = true
 getset.workspace = true
-hachi-pcs = { path = "../../../lz-hachi", optional = true, default-features = false }
 itertools.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-
-[features]
-hachi = ["dep:hachi-pcs"]
 
 [dev-dependencies]
 binius-math = { path = "../math", features = ["test-utils"] }
