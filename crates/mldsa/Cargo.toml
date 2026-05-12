@@ -1,0 +1,23 @@
+[package]
+name = "binius-mldsa"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# In-circuit ML-DSA (FIPS 204 / Dilithium) verifier and N-aggregate
+# verifier on Binius64.
+#
+# Phase 0 (this version) lands the Dilithium2 constants, the Z_q
+# (Q = 8 380 417) field-arithmetic gadgets, and a SHAKE256 wrapper
+# over the existing `binius-circuits` Keccak-f[1600] permutation. The
+# single-signature `MlDsaVerifier` and the N-aggregate
+# `AggregateMlDsaVerifier` are stubbed behind `unimplemented!()`; their
+# implementation phases are tracked in
+# `docs/aggregate-mldsa-design.md`.
+
+[dependencies]
+binius-core = { path = "../core" }
+binius-frontend = { path = "../frontend" }

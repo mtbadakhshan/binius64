@@ -59,6 +59,7 @@ The use of binary field arithmetic and XOR-based linear combinations makes this 
 | binius-core | Constraint system data structures shared by prover and verifier |
 | binius-frontend | Circuit construction API for Binius64 (CircuitBuilder, wires, witness) |
 | binius-circuits | Standard library of circuit gadgets (SHA256, ECDSA, base64, etc.) |
+| binius-mldsa | In-circuit ML-DSA (FIPS 204 / Dilithium) verifier and N-aggregate verifier (Phase 0: Z_q gadgets, SHAKE256, scaffolding; see `docs/aggregate-mldsa-design.md`) |
 | binius-spartan-frontend | Constraint system builder for Iron Spartan |
 
 ### Verifier Crates
