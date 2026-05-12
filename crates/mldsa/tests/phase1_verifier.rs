@@ -43,13 +43,14 @@
 use binius_core::{verify::verify_constraints, word::Word};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_mldsa::{
+	hint::{HINT_SECTION_BYTES, pack_h_native},
 	params::{MODE2, N, Q},
 	polyw1::polyw1_pack_native,
 	r7::{MU_BYTES, MU_LANES},
 	rounding::use_hint_native,
 	sigdecode::{
-		SIG_C_TILDE_BYTES, SIG_PACKED_BYTES, SIG_PACKED_LANES, pack_signature_native,
-		signature_to_lanes,
+		SIG_C_TILDE_BYTES, SIG_H_LANE_OFFSET, SIG_PACKED_BYTES, SIG_PACKED_LANES,
+		pack_signature_native, signature_to_lanes,
 	},
 	verifier::MlDsaVerifier,
 	zq::from_u64_witness,
@@ -79,7 +80,9 @@ struct Phase1Witness {
 
 /// Native end-to-end derivation of an honest Phase 1 witness from
 /// random `(z, hint, w_approx, μ)`. The signer's `c̃` is computed via
-/// the same R7 native pipeline the in-circuit `assert_r7` runs.
+/// the same R7 native pipeline the in-circuit `assert_r7` runs, and the
+/// hint is pack-encoded into the signature's `h` section so
+/// `unpack_h` round-trips it back to the original bits.
 fn build_honest_witness(seed: u64) -> Phase1Witness {
 	let mut rng = StdRng::seed_from_u64(seed);
 
@@ -89,24 +92,55 @@ fn build_honest_witness(seed: u64) -> Phase1Witness {
 		std::array::from_fn(|_| rng.random_range(MODE2.beta + 1..2 * MODE2.gamma1 - MODE2.beta))
 	});
 
-	// w_approx, hint, μ: random.
+	// w_approx, μ: random. hint: random sparse with total weight ≤
+	// OMEGA so it fits the encoding.
 	let w_approx: [[u32; N]; K] =
 		std::array::from_fn(|_| std::array::from_fn(|_| rng.random_range(0..Q)));
-	let hint: [[u32; N]; K] =
-		std::array::from_fn(|_| std::array::from_fn(|_| rng.random_range(0..2)));
+	let hint = random_sparse_hint(&mut rng);
 	let mu: [u8; MU_BYTES] = std::array::from_fn(|_| rng.random());
 
 	// c̃ = R7's native output — the only honest c̃ that satisfies the
 	// in-circuit R7 binding.
 	let c_tilde = r7_native(&w_approx, &hint, &mu);
 
-	// Pack σ = (c̃, z, h_zeros) into the 2420-byte byte stream the
-	// verifier consumes. The `h` section is left zero (it doesn't get
-	// parsed in Phase 1 — `hint` is supplied as separate witness).
-	let packed = pack_signature_native(&c_tilde, &z_centered);
+	// Pack σ = (c̃, z, h) into the 2420-byte byte stream. We use
+	// `pack_signature_native` to handle the c̃ + z sections, then
+	// overlay the h section with `pack_h_native(&hint)`.
+	let mut packed = pack_signature_native(&c_tilde, &z_centered);
+	let h_polyvec_u8: [[u8; N]; K] = std::array::from_fn(|k| {
+		std::array::from_fn(|p| hint[k][p] as u8)
+	});
+	let h_section = pack_h_native(&h_polyvec_u8);
+	let h_byte_offset = SIG_H_LANE_OFFSET * 8;
+	packed[h_byte_offset..h_byte_offset + HINT_SECTION_BYTES].copy_from_slice(&h_section);
 	let sig_lanes = signature_to_lanes(&packed);
 
 	Phase1Witness { sig_lanes, mu, w_approx, hint }
+}
+
+/// Generate a random hint polyvec with total weight ≤ OMEGA (the
+/// encoding bound). Each polynomial gets a random non-overlapping
+/// subset of positions.
+fn random_sparse_hint(rng: &mut StdRng) -> [[u32; N]; K] {
+	let total = rng.random_range(0..=MODE2.omega);
+	let mut placed = 0usize;
+	let mut h = [[0u32; N]; K];
+	for poly in h.iter_mut() {
+		if placed >= total {
+			break;
+		}
+		let this_count = rng.random_range(0..=(total - placed).min(40));
+		let mut positions: Vec<usize> = (0..N).collect();
+		for i in 0..this_count.min(positions.len()) {
+			let j = rng.random_range(i..positions.len());
+			positions.swap(i, j);
+		}
+		for &p in &positions[..this_count] {
+			poly[p] = 1;
+		}
+		placed += this_count;
+	}
+	h
 }
 
 /// Native R7 reference (lifted out of `tests/r7.rs` so this file is
@@ -147,11 +181,9 @@ fn run_verifier(w: &Phase1Witness) -> Result<(), ()> {
 	let mu_wires: [Wire; MU_LANES] = std::array::from_fn(|_| builder.add_witness());
 	let w_approx_wires: [[Wire; N]; K] =
 		std::array::from_fn(|_| std::array::from_fn(|_| from_u64_witness(&builder)));
-	let hint_wires: [[Wire; N]; K] =
-		std::array::from_fn(|_| std::array::from_fn(|_| builder.add_witness()));
 
-	let _verifier =
-		MlDsaVerifier::new(&builder, &sig_wires, &mu_wires, &w_approx_wires, &hint_wires);
+	let verifier =
+		MlDsaVerifier::new(&builder, &sig_wires, &mu_wires, &w_approx_wires);
 
 	let circuit = builder.build();
 	let mut filler = circuit.new_witness_filler();
@@ -169,7 +201,9 @@ fn run_verifier(w: &Phase1Witness) -> Result<(), ()> {
 	for k in 0..K {
 		for i in 0..N {
 			filler[w_approx_wires[k][i]] = Word(w.w_approx[k][i] as u64);
-			filler[hint_wires[k][i]] = Word(w.hint[k][i] as u64);
+			// `verifier.hint[k][i]` is the witness wire that `unpack_h`
+			// allocated internally for the prover-supplied hint bit.
+			filler[verifier.hint[k][i]] = Word(w.hint[k][i] as u64);
 		}
 	}
 	if circuit.populate_wire_witness(&mut filler).is_err() {
@@ -270,11 +304,33 @@ fn phase1_verifier_rejects_tampered_w_approx() {
 
 #[test]
 fn phase1_verifier_rejects_tampered_hint() {
+	// Flip a hint bit in the prover-supplied witness — the encoded
+	// `h` section in `sig` still carries the honest bits, so
+	// `unpack_h` rejects (cardinality + per-byte cascade catch the
+	// witness vs encoded mismatch).
 	let mut w = build_honest_witness(14);
 	w.hint[0][0] ^= 1;
 	assert!(
 		run_verifier(&w).is_err(),
-		"Phase 1 verifier must reject tampered hint",
+		"Phase 1 verifier must reject tampered prover-supplied hint witness",
+	);
+}
+
+#[test]
+fn phase1_verifier_rejects_tampered_h_section_of_sig() {
+	// Tamper a byte in the encoded `h` section of `σ`. `unpack_h`'s
+	// monotone-offset / strict-ordering / dead-byte-zero / cardinality
+	// checks catch the resulting encoding-witness mismatch.
+	let mut w = build_honest_witness(15);
+	// Flip the high bit of a byte deep in the index section of h.
+	let h_byte_offset = SIG_H_LANE_OFFSET * 8;
+	let target_byte = h_byte_offset + 50;
+	let lane_idx = target_byte / 8;
+	let bit_in_lane = (target_byte % 8) * 8;
+	w.sig_lanes[lane_idx] ^= 1u64 << bit_in_lane;
+	assert!(
+		run_verifier(&w).is_err(),
+		"Phase 1 verifier must reject tampering of σ's h section",
 	);
 }
 

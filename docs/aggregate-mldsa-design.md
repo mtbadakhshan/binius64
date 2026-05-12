@@ -276,33 +276,41 @@ runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
     `hint < 2` range check actually triggers when wired in via R7.
 - [x] **Phase 1 verifier integration milestone**:
   [`crates/mldsa/src/verifier.rs`](../crates/mldsa/src/verifier.rs)
-  ships the real `MlDsaVerifier::new(b, sig, mu_lanes, w_approx, hint)`
+  ships the real `MlDsaVerifier::new(b, sig, mu_lanes, w_approx)`
   that wires `unpack_c_tilde + unpack_z + assert_norm_centered +
-  assert_r7` into one Phase 1 verifier circuit (R5 hoisted as
-  public-input `w_approx`, hint hoisted as public-input `hint` until
-  `unpack_h` lands). Soundness battery in
+  unpack_h + assert_r7` into one Phase 1 verifier circuit (R5
+  hoisted as public-input `w_approx`; everything else derived from
+  `σ`).   Soundness battery in
   [`crates/mldsa/tests/phase1_verifier.rs`](../crates/mldsa/tests/phase1_verifier.rs)
-  (10 cases): random honest acceptance, c̃-byte tamper, z out-of-norm
-  tamper, μ / wApprox / hint tamper at polyvec position `[0][0]` and
-  at the deepest interior, plus the hint-slack-invariance acceptance
-  test (perturbations that don't change `use_hint` output are
-  deliberately accepted, mirroring the same property at the R7 layer).
+  (11 cases): random honest acceptance (multiple seeds), c̃-byte
+  tamper, z out-of-norm tamper, μ / wApprox tamper, prover-supplied
+  hint-witness tamper, σ's h-section byte tamper (caught by
+  `unpack_h`), tamper at polyvec position `[0][0]` and at the deepest
+  interior, plus the hint-slack-invariance acceptance test
+  (perturbations that don't change `use_hint` output are deliberately
+  accepted, mirroring the same property at the R7 layer).
   Synthetic-but-self-consistent: each test builds the signature byte
   stream from random `(z, hint, w_approx, μ)` via the native R7
-  pipeline, so the in-circuit verifier sees a fully consistent
-  `(σ, μ, w_approx, hint)` exactly as a real ML-DSA verifier would
-  after R5 hoisting.
+  pipeline, packs the hint via `pack_h_native`, and so the
+  in-circuit verifier sees a fully consistent `σ = (c̃, z, h_packed)`
+  exactly as a real ML-DSA verifier would after R5 hoisting.
 - [ ] Real-Dilithium-signature roundtrip: extend the harness to
   invoke an external `ml-dsa` Rust crate (or FFI to
   `dilithium/ref`) so the test inputs come from an actual KAT signer
   rather than the synthetic R7-derived c̃. Will catch any
   byte-encoding drift between our `pack_signature_native` and FIPS
   204 §5.1 wire format.
-- [ ] `unpack_h` (variable-length hint encoding with rejection
-  conditions; non-trivial since the C parser has data-dependent
-  control flow — needs a multiplexer-based design). Once this lands,
-  the `hint` parameter to `MlDsaVerifier::new` is internally derived
-  from `sig` rather than hoisted.
+  - [x] `unpack_h` (variable-length hint encoding with rejection
+    conditions) in [`crates/mldsa/src/hint.rs`](../crates/mldsa/src/hint.rs);
+    15 in-circuit tests in
+    [`crates/mldsa/tests/hint.rs`](../crates/mldsa/tests/hint.rs)
+    covering all five FIPS 204 validity rules (offsets monotone /
+    `≤ OMEGA`, indices strictly increasing within each polynomial,
+    dead bytes zero, hint cardinality matches `k_{K-1}`, witness bits
+    `< 2`) plus several acceptance distributions (zeros, one-per-poly,
+    single-poly only, OMEGA-density, random seeded). With this in,
+    `MlDsaVerifier::new` no longer takes a hoisted `hint` parameter
+    — it's derived from `σ` internally.
 - [ ] Bench prover / verifier per signature in
   `crates/mldsa/benches/single_signature.rs`.
 

@@ -46,6 +46,7 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod aggregate;
+pub mod hint;
 pub mod params;
 pub mod polyw1;
 pub mod polyz;
