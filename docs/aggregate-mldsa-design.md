@@ -311,8 +311,36 @@ runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
     single-poly only, OMEGA-density, random seeded). With this in,
     `MlDsaVerifier::new` no longer takes a hoisted `hint` parameter
     — it's derived from `σ` internally.
-- [ ] Bench prover / verifier per signature in
-  `crates/mldsa/benches/single_signature.rs`.
+- [x] Bench prover / verifier per signature in
+  [`crates/mldsa/benches/phase1_verifier.rs`](../crates/mldsa/benches/phase1_verifier.rs)
+  plus end-to-end production-path prove/verify regression in
+  [`crates/mldsa/tests/end_to_end_prove_verify.rs`](../crates/mldsa/tests/end_to_end_prove_verify.rs)
+  (honest acceptance, proof-byte-tamper rejection, and a `--nocapture`
+  diagnostic that prints the baseline below).
+
+#### Phase 1 baseline (Dilithium2 K = L = 4, `LOG_INV_RATE = 1`)
+
+Measured on the host machine via `cargo bench -p binius-mldsa --bench
+phase1_verifier`; reproducible since the witness is seeded
+(`build_honest_witness(0xab_cd_42)`). These numbers anchor regression
+detection going into Phase 2 — they are expected to grow noticeably
+once R5's lattice arithmetic is brought in-circuit.
+
+| Metric | Value |
+|---|---|
+| AND constraints | 130 067 |
+| MUL constraints | 1 024 |
+| `ValueVec` entries (= `2^17`) | 131 072 |
+| Circuit build + witness populate | ≈ 67 ms |
+| `Prover::setup + Verifier::setup` | ≈ 21 ms (one-off) |
+| `Prover::prove` per signature | ≈ 122 ms |
+| `Verifier::verify` per signature | ≈ 2.47 ms |
+| Proof size (BaseFold PCS) | 261 055 bytes (≈ 255 KiB) |
+
+The proof is BaseFold-mode in Phase 1; swapping in the Akita
+claim-reduced bridge from
+[`docs/akita-bridge-design-and-benchmarks.md`](akita-bridge-design-and-benchmarks.md)
+is left to Phase 3.
 
 Out-of-scope for Phase 1: the actual lattice computation; Akita;
 aggregation.
