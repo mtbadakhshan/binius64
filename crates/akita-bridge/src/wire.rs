@@ -318,7 +318,6 @@ mod tests {
 	use sha2::Sha256;
 
 	use super::*;
-	use akita_field::FromPrimitiveInt;
 	use akita_serialization::{AkitaSerialize, Compress};
 
 	type TestChallenger = HasherChallenger<Sha256>;

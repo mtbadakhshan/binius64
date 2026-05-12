@@ -463,6 +463,7 @@ pub fn prove_weighted_booleanity_sumcheck(
 }
 
 /// Prove a product sumcheck with Fiat-Shamir challenges from the Binius transcript.
+#[allow(clippy::type_complexity)]
 pub fn prove_product_sumcheck_transcript<Challenger_>(
 	lefts: &[Vec<AkitaFieldScalar>],
 	rights: &[Vec<AkitaFieldScalar>],
@@ -1361,7 +1362,8 @@ mod tests {
 			.map(|i| AkitaFieldScalar::from_u64(37 + i as u64))
 			.collect::<Vec<_>>();
 		let (claim, proof, left, right) =
-			prove_product_sumcheck(&[bit_table.clone()], &[selected_mask], &challenges).unwrap();
+			prove_product_sumcheck(std::slice::from_ref(&bit_table), &[selected_mask], &challenges)
+				.unwrap();
 		assert_eq!(claim, selected_claim);
 		assert_eq!(proof.verify_rounds(claim, &challenges).unwrap(), left[0] * right[0]);
 

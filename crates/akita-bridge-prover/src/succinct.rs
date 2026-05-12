@@ -226,7 +226,7 @@ where
 			let selected_initial = batched_u64_sum(&parity.opened_sums, alpha);
 			let (selected_claim, _selected_proof, selected_point, selected_openings, _) =
 				prove_product_sumcheck_transcript(
-					&[data.bit_table.clone()],
+					std::slice::from_ref(&data.bit_table),
 					&[selected_mask],
 					self.transcript,
 				)

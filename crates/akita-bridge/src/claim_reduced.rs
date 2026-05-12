@@ -444,6 +444,7 @@ fn verify_akita_claim_reduced_opening(
 		b"binius/akita-claim-reduced/openings",
 	);
 	let openings = [b_eval];
+	#[allow(clippy::type_complexity)]
 	let claims: Vec<(&[AkitaFieldScalar], Vec<CommittedOpenings<'_, AkitaFieldScalar, Commitment>>)> = vec![(
 		reduced_point,
 		vec![CommittedOpenings {
@@ -494,7 +495,7 @@ fn akita_claim_reduced_opening_shape(log_msg_len: usize) -> Result<AkitaBatchedP
 		max_num_vars,
 		max_num_vars,
 		AKITA_OPENING_CLAIMS,
-		batch.clone(),
+		batch,
 	)
 	.map_err(|_| Error::ProofEmpty)?;
 
@@ -576,8 +577,7 @@ fn akita_claim_reduced_opening_shape(log_msg_len: usize) -> Result<AkitaBatchedP
 	let mut step_shapes = Vec::with_capacity(n_recursive_folds + 1);
 	let mut current_w_len = root_w_len;
 	let mut current_log_basis = first_level_params.log_basis;
-	let mut current_level = 1usize;
-	for _ in 0..n_recursive_folds {
+	for (current_level, _) in (1usize..).zip(0..n_recursive_folds) {
 		let inputs = AkitaScheduleInputs {
 			max_num_vars,
 			level: current_level,
@@ -613,7 +613,6 @@ fn akita_claim_reduced_opening_shape(log_msg_len: usize) -> Result<AkitaBatchedP
 		}));
 		current_w_len = next_w_len;
 		current_log_basis = next_level_params.log_basis;
-		current_level += 1;
 	}
 
 	// ---- Direct-witness leaf (formula 7 of audit #003-A) ----

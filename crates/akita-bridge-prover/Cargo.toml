@@ -32,6 +32,7 @@ akita-transcript = { git = "https://github.com/LayerZero-Labs/akita.git", branch
 akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "taghi/fix/onehot-multi-chunk-overflow", default-features = false }
 
 [dev-dependencies]
+binius-hash = { path = "../hash" }
 binius-math = { path = "../math", features = ["test-utils"] }
 binius-transcript = { path = "../transcript" }
 rand.workspace = true

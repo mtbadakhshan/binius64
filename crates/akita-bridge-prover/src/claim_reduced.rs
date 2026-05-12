@@ -205,7 +205,7 @@ where
 			let selected_initial = batched_u64_sum(&parity.opened_sums, alpha);
 			let (selected_claim, _selected_proof, selected_point, selected_openings, _) =
 				prove_product_sumcheck_transcript(
-					&[data.bit_table.clone()],
+					std::slice::from_ref(&data.bit_table),
 					&[selected_mask],
 					self.transcript,
 				)
@@ -342,7 +342,7 @@ fn prove_akita_claim_reduced_opening(
 
 #[cfg(test)]
 mod tests {
-	use binius_akita_bridge::succinct::AkitaSuccinctVerifierChannel;
+	use binius_akita_bridge::claim_reduced::AkitaClaimReducedVerifierChannel;
 	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash1x128b};
 	use binius_hash::StdDigest;
 	use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
@@ -358,7 +358,7 @@ mod tests {
 	type P = PackedBinaryGhash1x128b;
 
 	#[test]
-	fn akita_succinct_verifier_accepts_structured_constant_relation() {
+	fn akita_claim_reduced_verifier_accepts_structured_constant_relation() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let log_len = 7;
 		let oracle_specs = vec![OracleSpec {
@@ -380,7 +380,7 @@ mod tests {
 		prover_channel.prove_oracle_relations([(oracle, message, transparent, claim)]);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = AkitaSuccinctVerifierChannel::new(
+		let mut verifier_channel = AkitaClaimReducedVerifierChannel::new(
 			&mut verifier_transcript,
 			&oracle_specs,
 			&akita_setup,
@@ -400,7 +400,7 @@ mod tests {
 	}
 
 	#[test]
-	fn akita_succinct_verifier_rejects_wrong_structured_relation() {
+	fn akita_claim_reduced_verifier_rejects_wrong_structured_relation() {
 		let mut rng = StdRng::seed_from_u64(1);
 		let log_len = 7;
 		let oracle_specs = vec![OracleSpec {
@@ -422,7 +422,7 @@ mod tests {
 		prover_channel.prove_oracle_relations([(oracle, message, transparent, claim)]);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = AkitaSuccinctVerifierChannel::new(
+		let mut verifier_channel = AkitaClaimReducedVerifierChannel::new(
 			&mut verifier_transcript,
 			&oracle_specs,
 			&akita_setup,

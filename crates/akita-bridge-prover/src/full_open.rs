@@ -157,12 +157,10 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_akita_bridge::full_open::AkitaFullOpenVerifierChannel;
 	use binius_field::{BinaryField128bGhash as B128, Field, PackedBinaryGhash1x128b};
 	use binius_hash::StdDigest;
-	use binius_iop::{
-		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-		full_open::AkitaFullOpenVerifierChannel,
-	};
+	use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_buffers,
