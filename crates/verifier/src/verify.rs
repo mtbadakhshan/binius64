@@ -8,6 +8,7 @@ use binius_akita_bridge::full_open::AkitaFullOpenVerifierChannel;
 use binius_akita_bridge::claim_reduced::{
 	AkitaClaimReducedSetup, AkitaClaimReducedVerifierChannel,
 };
+#[cfg(feature = "akita")]
 use binius_akita_bridge::succinct::{AkitaSuccinctSetup, AkitaSuccinctVerifierChannel};
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
