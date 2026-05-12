@@ -19,5 +19,11 @@ workspace = true
 # `docs/aggregate-mldsa-design.md`.
 
 [dependencies]
+binius-circuits = { path = "../circuits" }
 binius-core = { path = "../core" }
 binius-frontend = { path = "../frontend" }
+
+[dev-dependencies]
+proptest.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
+sha3.workspace = true
