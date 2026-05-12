@@ -229,8 +229,28 @@ runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
   `±1` non-zero coefficients via Fisher-Yates with rejection sampling.
   SHAKE streaming prerequisite is now in; only the Fisher-Yates loop
   (mux-based since the rejection rate is data-dependent) remains.
-- [ ] R6: `Decompose` + `UseHint` + `w1Encode` over the 1024
+- R6: `Decompose` + `UseHint` + `w1Encode` over the 1024
   `wApprox` coefficients, using `zq` gadgets.
+  - [x] `decompose` (single coefficient: `r ↦ (r1, r0_p)` with
+    `r1 ∈ [0, 43]`, `r0_p ∈ [0, 2γ₂]`) and `use_hint` (single
+    coefficient: `(r, h) ↦ w1'`) in
+    [`crates/mldsa/src/rounding.rs`](../crates/mldsa/src/rounding.rs);
+    12 in-circuit tests in
+    [`crates/mldsa/tests/rounding.rs`](../crates/mldsa/tests/rounding.rs)
+    cross-validated against an exact port of
+    `dilithium/ref/rounding.c` (whose own validity is checked by an
+    `--ignored` exhaustive 8 M-iteration sweep over all `r ∈ Z_q`).
+    The in-circuit constraints accept any valid `(r1, r0_p)`
+    decomposition; soundness against malicious non-canonical
+    decompositions is via the R7 final-hash check (see module-doc
+    sketch in `rounding.rs`).
+  - [ ] `w1Encode` polynomial bit-packer (4 × 6-bit coefficients per
+    3 bytes for Mode 2; 192 bytes per polynomial; 768 bytes for
+    `K = 4`). Lane-byte-misalignment makes this slightly fiddlier
+    than the simple `polyz_pack` analogue.
+  - [ ] `K = 4` polynomial wrapper that fans `decompose` + `use_hint`
+    out across the full `wApprox` vector (1024 calls each), plus the
+    full `w1Encode` of all `K` polynomials.
 - [ ] R7: `c̃' = SHAKE256(μ ‖ w₁')` + binding equality `c̃' == c̃`.
   SHAKE streaming prerequisite is now in (the `r7_worst_case_input`
   test in [`crates/mldsa/tests/shake.rs`](../crates/mldsa/tests/shake.rs)
