@@ -65,14 +65,6 @@ const R1_MAX: u32 = ALPHA - 1;
 ///      is computed via [`zq::add`]; the RHS is plain integer arithmetic
 ///      since `r1 · 2γ₂ + r0_p ≤ 44 · 2γ₂ < 2²³ < Q`).
 pub fn decompose(b: &CircuitBuilder, r: Wire) -> (Wire, Wire) {
-	let gamma2_const = b.add_constant_64(MODE2.gamma2 as u64);
-	let two_gamma2_const = b.add_constant_64(TWO_GAMMA2 as u64);
-
-	// `r' = (r + γ₂) mod Q`. After this rewrite the relation becomes
-	// `r' = r1 · 2γ₂ + r0_p` in plain (non-mod-Q) integer arithmetic
-	// because `r1 · 2γ₂ + r0_p ∈ [0, 44 · 2γ₂] = [0, Q − 1]`.
-	let r_prime = zq::add(b, r, gamma2_const);
-
 	// Hint provides the canonical `(r1, r0_p)` derived from `r`. A
 	// non-canonical malicious prover can witness a different valid
 	// decomposition, but downstream `use_hint` will then produce a
@@ -81,6 +73,28 @@ pub fn decompose(b: &CircuitBuilder, r: Wire) -> (Wire, Wire) {
 	let outputs = b.call_hint(DecomposeMode2Hint, &[], &[r]);
 	let r1 = outputs[0];
 	let r0_p = outputs[1];
+	decompose_constrain(b, r, r1, r0_p);
+	(r1, r0_p)
+}
+
+/// Emit only the algebraic + range constraints that
+/// [`decompose`]'s output `(r1, r0_p)` must satisfy, without invoking
+/// the canonical-form hint. Useful for soundness tests that want to
+/// witness a non-canonical decomposition (which the constraints are
+/// supposed to accept — soundness comes from R7 downstream).
+///
+/// Same arithmetic as [`decompose`]:
+///   1. `r1 < 44`,
+///   2. `r0_p ≤ 2γ₂` (i.e. `r0_p < 2γ₂ + 1`),
+///   3. `(r + γ₂) mod Q == r1 · 2γ₂ + r0_p` (in plain integer arithmetic).
+pub fn decompose_constrain(b: &CircuitBuilder, r: Wire, r1: Wire, r0_p: Wire) {
+	let gamma2_const = b.add_constant_64(MODE2.gamma2 as u64);
+	let two_gamma2_const = b.add_constant_64(TWO_GAMMA2 as u64);
+
+	// `r' = (r + γ₂) mod Q`. After this rewrite the relation becomes
+	// `r' = r1 · 2γ₂ + r0_p` in plain (non-mod-Q) integer arithmetic
+	// because `r1 · 2γ₂ + r0_p ∈ [0, 44 · 2γ₂] = [0, Q − 1]`.
+	let r_prime = zq::add(b, r, gamma2_const);
 
 	// Range checks.
 	let r1_bound = b.add_constant_64(ALPHA as u64);
@@ -97,8 +111,6 @@ pub fn decompose(b: &CircuitBuilder, r: Wire) -> (Wire, Wire) {
 	let (sum, carry) = b.iadd(r1_two_g_lo, r0_p);
 	b.assert_false("decompose: r1*2*gamma2 + r0_p has no overflow", carry);
 	b.assert_eq("decompose: r' == r1 * 2*gamma2 + r0_p", sum, r_prime);
-
-	(r1, r0_p)
 }
 
 /// `UseHint(r, h)` for Dilithium2.

@@ -235,7 +235,7 @@ runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
     `r1 ∈ [0, 43]`, `r0_p ∈ [0, 2γ₂]`) and `use_hint` (single
     coefficient: `(r, h) ↦ w1'`) in
     [`crates/mldsa/src/rounding.rs`](../crates/mldsa/src/rounding.rs);
-    12 in-circuit tests in
+    15 in-circuit tests in
     [`crates/mldsa/tests/rounding.rs`](../crates/mldsa/tests/rounding.rs)
     cross-validated against an exact port of
     `dilithium/ref/rounding.c` (whose own validity is checked by an
@@ -243,14 +243,22 @@ runs `w = A·z − c·t₁·2^D` and feeds the result in) and proves R1 + R3
     The in-circuit constraints accept any valid `(r1, r0_p)`
     decomposition; soundness against malicious non-canonical
     decompositions is via the R7 final-hash check (see module-doc
-    sketch in `rounding.rs`).
-  - [ ] `w1Encode` polynomial bit-packer (4 × 6-bit coefficients per
-    3 bytes for Mode 2; 192 bytes per polynomial; 768 bytes for
-    `K = 4`). Lane-byte-misalignment makes this slightly fiddlier
-    than the simple `polyz_pack` analogue.
+    sketch in `rounding.rs` and the
+    `boundary_decompositions_yield_different_use_hint_outputs` test).
+  - [x] `polyw1_pack` (`w1Encode` for one 256-coefficient polynomial:
+    pack 4 × 6-bit coefficients per 3 bytes, 192 bytes total per poly)
+    in [`crates/mldsa/src/polyw1.rs`](../crates/mldsa/src/polyw1.rs);
+    7 in-circuit tests in
+    [`crates/mldsa/tests/polyw1.rs`](../crates/mldsa/tests/polyw1.rs)
+    cross-validated against the C reference, including a
+    "one-set-at-each-lane-boundary" stress for the next-lane
+    overflow contribution.
   - [ ] `K = 4` polynomial wrapper that fans `decompose` + `use_hint`
     out across the full `wApprox` vector (1024 calls each), plus the
-    full `w1Encode` of all `K` polynomials.
+    full `w1Encode` of all `K` polynomials. The
+    [R6 → R7 pipeline integration test](../crates/mldsa/tests/r6_r7_pipeline.rs)
+    already exercises this composition for `K = 1` end-to-end through
+    SHAKE256, so the `K = 4` wrapper is structurally trivial.
 - [ ] R7: `c̃' = SHAKE256(μ ‖ w₁')` + binding equality `c̃' == c̃`.
   SHAKE streaming prerequisite is now in (the `r7_worst_case_input`
   test in [`crates/mldsa/tests/shake.rs`](../crates/mldsa/tests/shake.rs)
